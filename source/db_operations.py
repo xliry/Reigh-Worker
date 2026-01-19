@@ -10,6 +10,13 @@ import httpx  # For calling Supabase Edge Function
 from pathlib import Path
 import base64 # Added for JWT decoding
 
+# Import centralized logger for system_logs visibility
+try:
+    from .logging_utils import headless_logger
+except ImportError:
+    # Fallback if logging_utils not available
+    headless_logger = None
+
 try:
     from supabase import create_client, Client as SupabaseClient
 except ImportError:
@@ -45,6 +52,18 @@ def dprint(msg: str):
     """Print a debug message if debug_mode is enabled."""
     if debug_mode:
         print(f"[DEBUG {datetime.datetime.now().isoformat()}] {msg}")
+
+def _log_thumbnail(msg: str, level: str = "debug", task_id: str = None):
+    """Log thumbnail-related messages to both stdout and centralized logger."""
+    full_msg = f"[THUMBNAIL] {msg}"
+    print(full_msg)  # Always print to stdout
+    if headless_logger:
+        if level == "info":
+            headless_logger.info(full_msg, task_id=task_id)
+        elif level == "warning":
+            headless_logger.warning(full_msg, task_id=task_id)
+        else:
+            headless_logger.debug(full_msg, task_id=task_id)
 
 # -----------------------------------------------------------------------------
 # Generic edge function retry helper
@@ -635,6 +654,7 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
                 # Check if this is a video file that needs thumbnail extraction
                 video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.m4v'}
                 is_video = output_path.suffix.lower() in video_extensions
+                _log_thumbnail(f"File: {output_path.name}, suffix: {output_path.suffix.lower()}, is_video: {is_video}", task_id=task_id_str)
                 
                 # Use base64 encoding for files under 2MB (MODE 1), presigned URLs for larger files (MODE 3)
                 FILE_SIZE_THRESHOLD_MB = 2.0
@@ -662,44 +682,69 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
                             from .common_utils import save_frame_from_video
                             import cv2
 
-                            dprint(f"[DEBUG] Extracting first frame from video {output_path.name}")
+                            first_frame_base64 = None
+                            
+                            # First, check if a poster/thumbnail already exists next to the video
+                            # (e.g., join_clips.py saves {task_id}_joined.jpg alongside {task_id}_joined.mp4)
+                            existing_poster_path = output_path.with_suffix('.jpg')
+                            if existing_poster_path.exists():
+                                _log_thumbnail(f"Found existing poster: {existing_poster_path.name}", level="info", task_id=task_id_str)
+                                try:
+                                    with open(existing_poster_path, 'rb') as poster_file:
+                                        poster_bytes = poster_file.read()
+                                        first_frame_base64 = base64.b64encode(poster_bytes).decode('utf-8')
+                                    _log_thumbnail(f"✅ Used existing poster ({len(first_frame_base64)} bytes base64)", level="info", task_id=task_id_str)
+                                except Exception as e:
+                                    _log_thumbnail(f"⚠️ Failed to read existing poster: {e}", level="warning", task_id=task_id_str)
+                            
+                            # If no existing poster, extract first frame from video
+                            if first_frame_base64 is None:
+                                _log_thumbnail(f"Extracting first frame from video {output_path.name}", task_id=task_id_str)
+                                dprint(f"[DEBUG] Extracting first frame from video {output_path.name}")
 
-                            # Create temporary file for first frame
-                            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_frame:
-                                temp_frame_path = Path(temp_frame.name)
+                                # Create temporary file for first frame
+                                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_frame:
+                                    temp_frame_path = Path(temp_frame.name)
 
-                            # Get video resolution for frame extraction
-                            cap = cv2.VideoCapture(str(output_path))
-                            if cap.isOpened():
-                                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                                cap.release()
+                                # Get video resolution for frame extraction
+                                cap = cv2.VideoCapture(str(output_path))
+                                if cap.isOpened():
+                                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                                    cap.release()
 
-                                # Extract first frame (index 0)
-                                if save_frame_from_video(output_path, 0, temp_frame_path, (width, height)):
-                                    dprint(f"[DEBUG] Extracted first frame, encoding as base64")
-                                    
-                                    # Read and encode thumbnail
-                                    with open(temp_frame_path, 'rb') as thumb_file:
-                                        thumb_bytes = thumb_file.read()
-                                        first_frame_base64 = base64.b64encode(thumb_bytes).decode('utf-8')
-                                    
-                                    payload["first_frame_data"] = first_frame_base64
-                                    # Use unique filename based on task_id to prevent overwrites
-                                    payload["first_frame_filename"] = f"thumb_{task_id_str[:8]}.jpg"
-                                    dprint(f"[DEBUG] First frame encoded successfully")
+                                    # Extract first frame (index 0)
+                                    if save_frame_from_video(output_path, 0, temp_frame_path, (width, height)):
+                                        dprint(f"[DEBUG] Extracted first frame, encoding as base64")
+                                        
+                                        # Read and encode thumbnail
+                                        with open(temp_frame_path, 'rb') as thumb_file:
+                                            thumb_bytes = thumb_file.read()
+                                            first_frame_base64 = base64.b64encode(thumb_bytes).decode('utf-8')
+                                        
+                                        _log_thumbnail(f"✅ First frame extracted and encoded ({len(first_frame_base64)} bytes base64)", level="info", task_id=task_id_str)
+                                        dprint(f"[DEBUG] First frame encoded successfully")
+                                    else:
+                                        _log_thumbnail(f"⚠️ save_frame_from_video failed for {output_path.name}", level="warning", task_id=task_id_str)
+                                        dprint(f"[WARNING] Failed to extract first frame from video")
                                 else:
-                                    dprint(f"[WARNING] Failed to extract first frame from video")
-                            else:
-                                dprint(f"[WARNING] Could not open video for frame extraction")
+                                    _log_thumbnail(f"⚠️ Could not open video with cv2: {output_path}", level="warning", task_id=task_id_str)
+                                    dprint(f"[WARNING] Could not open video for frame extraction")
 
-                            # Clean up temporary file
-                            try:
-                                temp_frame_path.unlink()
-                            except:
-                                pass
+                                # Clean up temporary file
+                                try:
+                                    temp_frame_path.unlink()
+                                except:
+                                    pass
+                            
+                            # Add thumbnail to payload if we got one
+                            if first_frame_base64:
+                                payload["first_frame_data"] = first_frame_base64
+                                # Use unique filename based on task_id to prevent overwrites
+                                payload["first_frame_filename"] = f"thumb_{task_id_str[:8]}.jpg"
 
                         except Exception as e:
+                            _log_thumbnail(f"❌ Exception during thumbnail extraction: {e}", level="warning", task_id=task_id_str)
                             dprint(f"[WARNING] Error extracting/encoding thumbnail: {e}")
                             # Continue without thumbnail
                     
@@ -771,58 +816,81 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
 
                     # Step 2: Extract and upload thumbnail for videos (if thumbnail URL was generated)
                     thumbnail_storage_path = None
+                    if is_video and "thumbnail_upload_url" not in upload_data:
+                        _log_thumbnail(f"MODE3: ⚠️ Edge function did not return thumbnail_upload_url for video", level="warning", task_id=task_id_str)
                     if is_video and "thumbnail_upload_url" in upload_data:
                         try:
                             import tempfile
                             from .common_utils import save_frame_from_video
                             import cv2
 
-                            dprint(f"[DEBUG] Extracting first frame from video {output_path.name}")
-
-                            # Create temporary file for first frame
-                            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_frame:
-                                temp_frame_path = Path(temp_frame.name)
-
-                            # Get video resolution for frame extraction
-                            cap = cv2.VideoCapture(str(output_path))
-                            if cap.isOpened():
-                                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                                cap.release()
-
-                                # Extract first frame (index 0)
-                                if save_frame_from_video(output_path, 0, temp_frame_path, (width, height)):
-                                    dprint(f"[DEBUG] Extracted first frame, uploading via signed URL")
-                                    
-                                    # Upload thumbnail directly via signed URL - WITH RETRY
-                                    thumb_resp, thumb_error = _call_edge_function_with_retry(
-                                        edge_url=upload_data["thumbnail_upload_url"],
-                                        payload=temp_frame_path,
-                                        headers={"Content-Type": "image/jpeg"},
-                                        function_name="storage-upload-thumbnail",
-                                        context_id=task_id_str,
-                                        timeout=60,
-                                        max_retries=3,
-                                        method="PUT",
-                                    )
-                                    
-                                    if thumb_resp and thumb_resp.status_code in [200, 201]:
-                                        thumbnail_storage_path = upload_data["thumbnail_storage_path"]
-                                        dprint(f"[DEBUG] Thumbnail uploaded successfully via signed URL")
-                                    else:
-                                        dprint(f"[WARNING] Thumbnail upload failed: {thumb_error or thumb_resp.status_code if thumb_resp else 'No response'}")
-                                else:
-                                    dprint(f"[WARNING] Failed to extract first frame from video")
+                            thumb_file_to_upload = None
+                            
+                            # First, check if a poster/thumbnail already exists next to the video
+                            existing_poster_path = output_path.with_suffix('.jpg')
+                            if existing_poster_path.exists():
+                                _log_thumbnail(f"MODE3: Found existing poster: {existing_poster_path.name}", level="info", task_id=task_id_str)
+                                thumb_file_to_upload = existing_poster_path
                             else:
-                                dprint(f"[WARNING] Could not open video for frame extraction")
+                                # Extract first frame from video
+                                _log_thumbnail(f"MODE3: Extracting first frame from video {output_path.name}", task_id=task_id_str)
+                                dprint(f"[DEBUG] Extracting first frame from video {output_path.name}")
 
-                            # Clean up temporary file
-                            try:
-                                temp_frame_path.unlink()
-                            except:
-                                pass
+                                # Create temporary file for first frame
+                                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_frame:
+                                    temp_frame_path = Path(temp_frame.name)
+
+                                # Get video resolution for frame extraction
+                                cap = cv2.VideoCapture(str(output_path))
+                                if cap.isOpened():
+                                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                                    cap.release()
+
+                                    # Extract first frame (index 0)
+                                    if save_frame_from_video(output_path, 0, temp_frame_path, (width, height)):
+                                        thumb_file_to_upload = temp_frame_path
+                                        _log_thumbnail(f"MODE3: ✅ First frame extracted", level="info", task_id=task_id_str)
+                                    else:
+                                        _log_thumbnail(f"MODE3: ⚠️ save_frame_from_video failed", level="warning", task_id=task_id_str)
+                                        dprint(f"[WARNING] Failed to extract first frame from video")
+                                else:
+                                    _log_thumbnail(f"MODE3: ⚠️ Could not open video with cv2", level="warning", task_id=task_id_str)
+                                    dprint(f"[WARNING] Could not open video for frame extraction")
+                            
+                            # Upload thumbnail if we have one
+                            if thumb_file_to_upload:
+                                dprint(f"[DEBUG] Uploading thumbnail via signed URL")
+                                
+                                # Upload thumbnail directly via signed URL - WITH RETRY
+                                thumb_resp, thumb_error = _call_edge_function_with_retry(
+                                    edge_url=upload_data["thumbnail_upload_url"],
+                                    payload=thumb_file_to_upload,
+                                    headers={"Content-Type": "image/jpeg"},
+                                    function_name="storage-upload-thumbnail",
+                                    context_id=task_id_str,
+                                    timeout=60,
+                                    max_retries=3,
+                                    method="PUT",
+                                )
+                                
+                                if thumb_resp and thumb_resp.status_code in [200, 201]:
+                                    thumbnail_storage_path = upload_data["thumbnail_storage_path"]
+                                    _log_thumbnail(f"MODE3: ✅ Thumbnail uploaded successfully via signed URL", level="info", task_id=task_id_str)
+                                    dprint(f"[DEBUG] Thumbnail uploaded successfully via signed URL")
+                                else:
+                                    _log_thumbnail(f"MODE3: ⚠️ Thumbnail upload failed: {thumb_error or thumb_resp.status_code if thumb_resp else 'No response'}", level="warning", task_id=task_id_str)
+                                    dprint(f"[WARNING] Thumbnail upload failed: {thumb_error or thumb_resp.status_code if thumb_resp else 'No response'}")
+
+                            # Clean up temporary file if we created one
+                            if thumb_file_to_upload and thumb_file_to_upload != existing_poster_path:
+                                try:
+                                    thumb_file_to_upload.unlink()
+                                except:
+                                    pass
 
                         except Exception as e:
+                            _log_thumbnail(f"MODE3: ❌ Exception during thumbnail handling: {e}", level="warning", task_id=task_id_str)
                             dprint(f"[WARNING] Error extracting/uploading thumbnail: {e}")
                             # Continue without thumbnail
 
