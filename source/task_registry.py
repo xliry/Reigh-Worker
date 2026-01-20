@@ -601,19 +601,27 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                 
                 generation_params["num_inference_steps"] = phase_config_steps
                 
-                # NOTE: We use lora_names + lora_multipliers directly, NOT additional_loras
+                # Copy non-LoRA params from phase_config
                 for key in ["guidance_phases", "switch_threshold", "switch_threshold2",
                            "guidance_scale", "guidance2_scale", "guidance3_scale",
-                           "flow_shift", "sample_solver", "model_switch_phase",
-                           "lora_names", "lora_multipliers"]:
+                           "flow_shift", "sample_solver", "model_switch_phase"]:
                     if key in parsed_phase_config and parsed_phase_config[key] is not None:
                         generation_params[key] = parsed_phase_config[key]
-                
-                if "lora_names" in parsed_phase_config:
-                    generation_params["activated_loras"] = parsed_phase_config["lora_names"]
-                if "lora_multipliers" in parsed_phase_config:
-                    generation_params["loras_multipliers"] = " ".join(str(m) for m in parsed_phase_config["lora_multipliers"])
-                
+
+                # Copy LoRA params from phase_config ONLY if no segment-specific LoRAs
+                # (segment_loras takes precedence over phase_config LoRAs)
+                if not segment_lora_config:
+                    for key in ["lora_names", "lora_multipliers"]:
+                        if key in parsed_phase_config and parsed_phase_config[key] is not None:
+                            generation_params[key] = parsed_phase_config[key]
+
+                    if "lora_names" in parsed_phase_config:
+                        generation_params["activated_loras"] = parsed_phase_config["lora_names"]
+                    if "lora_multipliers" in parsed_phase_config:
+                        generation_params["loras_multipliers"] = " ".join(str(m) for m in parsed_phase_config["lora_multipliers"])
+                else:
+                    dprint_func(f"[PER_SEGMENT_PHASE_CONFIG] Task {task_id}: Skipping phase_config LoRAs (segment-specific LoRAs take precedence)")
+
                 # CRITICAL: Run LoRA resolution after phase_config parsing
                 # phase_config extracts LoRA URLs which need to be downloaded and resolved to absolute paths
                 # NOTE: Only pass lora_names/loras_multipliers, NOT additional_loras (which is passed through but not processed)
