@@ -174,26 +174,26 @@ class LoRAConfig(ParamGroup):
     def from_phase_config(cls, phase_config: Dict[str, Any], **context) -> 'LoRAConfig':
         """
         Parse LoRA config from phase_config structure.
-        
+
         Phase config has LoRAs per phase with per-phase multipliers.
         We combine into single entries with semicolon-separated multipliers.
         """
         entries = []
         phases = phase_config.get('phases', [])
-        
+
         # Collect all unique LoRAs with their per-phase multipliers
         lora_phases: Dict[str, List[float]] = {}  # url -> [mult_phase1, mult_phase2, ...]
-        
+
         for phase_idx, phase in enumerate(phases):
             phase_loras = phase.get('loras', [])
             for lora in phase_loras:
                 url = lora.get('url', '')
                 mult = lora.get('multiplier', 1.0)
-                
+
                 if url not in lora_phases:
                     lora_phases[url] = [0.0] * len(phases)
                 lora_phases[url][phase_idx] = mult
-        
+
         # Create entries with combined multipliers
         for url, mults in lora_phases.items():
             mult_str = ';'.join(str(m) for m in mults)
@@ -204,7 +204,56 @@ class LoRAConfig(ParamGroup):
                 status=LoRAStatus.PENDING,
                 source='phase_config'
             ))
-        
+
+        return cls(entries=entries)
+
+    @classmethod
+    def from_segment_loras(cls, segment_loras: List[Dict[str, Any]], **context) -> 'LoRAConfig':
+        """
+        Parse LoRA config from per-segment LoRA override format.
+
+        Args:
+            segment_loras: List of LoRA dicts from frontend:
+                [{"id": "...", "path": "...", "strength": 0.8, "name": "..."}, ...]
+
+        Returns:
+            LoRAConfig with entries for each LoRA
+        """
+        task_id = context.get('task_id', '')
+        entries = []
+
+        for lora_dict in segment_loras:
+            # Frontend sends: {id, path, strength, name?}
+            # path could be a URL or a local path/filename
+            lora_path = lora_dict.get('path', '')
+            strength = lora_dict.get('strength', 1.0)
+            lora_name = lora_dict.get('name', '')
+
+            if not lora_path:
+                continue
+
+            # Detect if this is a URL that needs downloading
+            is_url = lora_path.startswith(('http://', 'https://'))
+
+            if is_url:
+                # URL needs downloading
+                entries.append(LoRAEntry(
+                    url=lora_path,
+                    filename=os.path.basename(lora_path),
+                    multiplier=strength,
+                    status=LoRAStatus.PENDING,
+                    source='segment_loras'
+                ))
+            else:
+                # Local file or filename
+                entries.append(LoRAEntry(
+                    filename=lora_path,
+                    local_path=lora_path if os.path.isabs(lora_path) else None,
+                    multiplier=strength,
+                    status=LoRAStatus.LOCAL,
+                    source='segment_loras'
+                ))
+
         return cls(entries=entries)
     
     def to_wgp_format(self) -> Dict[str, Any]:

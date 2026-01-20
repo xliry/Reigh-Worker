@@ -526,6 +526,41 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         expanded_frame_overlap = orchestrator_payload["frame_overlap_expanded"]
         vace_refs_instructions_all = orchestrator_payload.get("vace_image_refs_to_prepare_by_worker", [])
 
+        # Per-segment parameter overrides (Phase 3: Backend Implementation)
+        phase_configs_expanded = orchestrator_payload.get("phase_configs_expanded", [])
+        loras_per_segment_expanded = orchestrator_payload.get("loras_per_segment_expanded", [])
+
+        # Log per-segment override summary
+        dprint(f"[PER_SEGMENT_OVERRIDES] ========== Per-Segment Parameter Overrides ==========")
+        dprint(f"[PER_SEGMENT_OVERRIDES] phase_configs_expanded: {len(phase_configs_expanded)} entries received")
+        dprint(f"[PER_SEGMENT_OVERRIDES] loras_per_segment_expanded: {len(loras_per_segment_expanded)} entries received")
+
+        # Count non-null overrides
+        phase_config_overrides = sum(1 for pc in phase_configs_expanded if pc is not None)
+        lora_overrides = sum(1 for l in loras_per_segment_expanded if l is not None)
+        dprint(f"[PER_SEGMENT_OVERRIDES] Segments with phase_config override: {phase_config_overrides}/{num_segments}")
+        dprint(f"[PER_SEGMENT_OVERRIDES] Segments with LoRA override: {lora_overrides}/{num_segments}")
+
+        # Log per-segment detail
+        for idx in range(num_segments):
+            has_pc = idx < len(phase_configs_expanded) and phase_configs_expanded[idx] is not None
+            has_lora = idx < len(loras_per_segment_expanded) and loras_per_segment_expanded[idx] is not None
+
+            pc_info = "CUSTOM" if has_pc else "default"
+            if has_pc:
+                pc = phase_configs_expanded[idx]
+                preset_name = pc.get("preset_name", pc.get("name", "unknown"))
+                pc_info = f"CUSTOM ({preset_name})"
+
+            lora_info = "default"
+            if has_lora:
+                lora_count = len(loras_per_segment_expanded[idx])
+                lora_names = [l.get("name", l.get("path", "?")[:20]) for l in loras_per_segment_expanded[idx][:3]]
+                lora_info = f"CUSTOM ({lora_count} LoRAs: {lora_names})"
+
+            dprint(f"[PER_SEGMENT_OVERRIDES]   Segment {idx}: phase_config={pc_info}, loras={lora_info}")
+        dprint(f"[PER_SEGMENT_OVERRIDES] =====================================================")
+
         # Normalize single int frame_overlap to array
         if isinstance(expanded_frame_overlap, int):
             single_overlap_value = expanded_frame_overlap
@@ -1881,7 +1916,28 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             else:
                 # No guidance for this segment
                 segment_payload["structure_guidance"] = None
-            
+
+            # =============================================================================
+            # Per-Segment Parameter Overrides (Phase 3: Backend Implementation)
+            # =============================================================================
+            # Build individual_segment_params dict with per-segment overrides
+            individual_segment_params = {}
+
+            # Add per-segment phase_config if available
+            if idx < len(phase_configs_expanded) and phase_configs_expanded[idx] is not None:
+                individual_segment_params["phase_config"] = phase_configs_expanded[idx]
+                dprint(f"[PER_SEGMENT_PARAMS] Segment {idx}: Using per-segment phase_config override")
+
+            # Add per-segment LoRAs if available
+            if idx < len(loras_per_segment_expanded) and loras_per_segment_expanded[idx] is not None:
+                individual_segment_params["segment_loras"] = loras_per_segment_expanded[idx]
+                dprint(f"[PER_SEGMENT_PARAMS] Segment {idx}: Using per-segment LoRA override ({len(loras_per_segment_expanded[idx])} LoRAs)")
+
+            # Only add individual_segment_params if it has content
+            if individual_segment_params:
+                segment_payload["individual_segment_params"] = individual_segment_params
+                dprint(f"[PER_SEGMENT_PARAMS] Segment {idx}: Added individual_segment_params with keys: {list(individual_segment_params.keys())}")
+
             # Add extracted parameters at top level for queue processing
             segment_payload.update(extracted_params)
             

@@ -517,16 +517,79 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
             generation_params["guidance_scale"] = explicit_guidance
         
         explicit_flow_shift = _get_param("flow_shift", segment_params, orchestrator_details, prefer_truthy=True)
-        if explicit_flow_shift: 
+        if explicit_flow_shift:
             generation_params["flow_shift"] = explicit_flow_shift
+
+        # =============================================================================
+        # Per-Segment Parameter Overrides (Phase 3: Backend Implementation)
+        # =============================================================================
+        # Log what per-segment overrides were received
+        dprint_func(f"[PER_SEGMENT_HANDLER] Task {task_id}: ========== Per-Segment Override Check ==========")
+        dprint_func(f"[PER_SEGMENT_HANDLER] Task {task_id}: individual_params keys: {list(individual_params.keys()) if individual_params else 'None'}")
+
+        # Check for segment-specific LoRAs first (highest priority)
+        # This allows per-segment LoRA overrides to take precedence over phase_config LoRAs
+        segment_loras = _get_param("segment_loras", individual_params, default=None)
+        segment_lora_config = None
+
+        if segment_loras:
+            dprint_func(f"[PER_SEGMENT_LORAS] Task {task_id}: Using segment-specific LoRAs ({len(segment_loras)} LoRAs)")
+            # segment_loras format: [{"id": "...", "path": "...", "strength": 0.8, "name": "..."}, ...]
+            # Convert to LoRAConfig format
+            segment_lora_config = LoRAConfig.from_segment_loras(segment_loras, task_id=task_id)
+
+            # Download any pending LoRAs
+            if segment_lora_config.has_pending_downloads():
+                for url in segment_lora_config.get_pending_downloads().keys():
+                    if url:
+                        local_filename = _download_lora_from_url(
+                            url=url,
+                            task_id=task_id,
+                            dprint=dprint_func,
+                            model_type=model_name,
+                        )
+                        segment_lora_config.mark_downloaded(url, local_filename)
+
+            # Convert to WGP format
+            wgp_lora = segment_lora_config.to_wgp_format()
+            if wgp_lora["activated_loras"]:
+                dprint_func(f"[PER_SEGMENT_LORAS] Task {task_id}: Resolved {len(wgp_lora['activated_loras'])} segment-specific LoRAs:")
+                for i, lora_path in enumerate(wgp_lora["activated_loras"]):
+                    dprint_func(f"[PER_SEGMENT_LORAS] Task {task_id}:   [{i}] '{lora_path}'")
+
+                generation_params["activated_loras"] = wgp_lora["activated_loras"]
+                generation_params["loras_multipliers"] = wgp_lora["loras_multipliers"]
+                headless_logger.info(f"Resolved {len(wgp_lora['activated_loras'])} segment-specific LoRAs", task_id=task_id)
+        else:
+            dprint_func(f"[PER_SEGMENT_LORAS] Task {task_id}: No segment-specific LoRAs - will use phase_config/shot-level LoRAs if present")
+
+        # Determine phase_config source for logging
+        phase_config_from_individual = individual_params.get("phase_config") if individual_params else None
+        phase_config_from_segment = segment_params.get("phase_config") if segment_params else None
+        phase_config_from_orchestrator = orchestrator_details.get("phase_config") if orchestrator_details else None
 
         phase_config_source = _get_param(
             "phase_config", individual_params, segment_params, orchestrator_details, prefer_truthy=True
         )
+
+        # Log which source phase_config came from
+        if phase_config_source:
+            if phase_config_from_individual:
+                source_name = "PER-SEGMENT (individual_params)"
+            elif phase_config_from_segment:
+                source_name = "segment_params"
+            else:
+                source_name = "SHOT-LEVEL (orchestrator_details)"
+
+            preset_name = phase_config_source.get("preset_name", phase_config_source.get("name", "unknown"))
+            dprint_func(f"[PER_SEGMENT_PHASE_CONFIG] Task {task_id}: Using phase_config from {source_name}")
+            dprint_func(f"[PER_SEGMENT_PHASE_CONFIG] Task {task_id}: preset_name={preset_name}")
+
         if phase_config_source:
             try:
                 steps_per_phase = phase_config_source.get("steps_per_phase", [2, 2, 2])
                 phase_config_steps = sum(steps_per_phase)
+                dprint_func(f"[PER_SEGMENT_PHASE_CONFIG] Task {task_id}: steps_per_phase={steps_per_phase} (total={phase_config_steps})")
                 
                 parsed_phase_config = parse_phase_config(
                     phase_config=phase_config_source,
@@ -554,13 +617,14 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                 # CRITICAL: Run LoRA resolution after phase_config parsing
                 # phase_config extracts LoRA URLs which need to be downloaded and resolved to absolute paths
                 # NOTE: Only pass lora_names/loras_multipliers, NOT additional_loras (which is passed through but not processed)
-                if any(key in generation_params for key in ["activated_loras", "loras_multipliers"]):
+                # IMPORTANT: Skip if segment_loras was already applied (per-segment override takes precedence)
+                if not segment_lora_config and any(key in generation_params for key in ["activated_loras", "loras_multipliers"]):
                     lora_params_for_config = {
-                        k: v for k, v in generation_params.items() 
+                        k: v for k, v in generation_params.items()
                         if k in ["activated_loras", "loras_multipliers", "lora_names", "lora_multipliers"]
                     }
                     lora_config = LoRAConfig.from_params(lora_params_for_config, task_id=task_id)
-                    
+
                     # Download any pending LoRAs
                     if lora_config.has_pending_downloads():
                         for url in lora_config.get_pending_downloads().keys():
@@ -572,7 +636,7 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                                     model_type=model_name,
                                 )
                                 lora_config.mark_downloaded(url, local_filename)
-                    
+
                     # Convert to WGP format
                     wgp_lora = lora_config.to_wgp_format()
                     if wgp_lora["activated_loras"]:
@@ -580,16 +644,28 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                         dprint_func(f"[LORA_CONFIG_OUTPUT] Task {task_id}: Resolved {len(wgp_lora['activated_loras'])} LoRAs:")
                         for i, lora_path in enumerate(wgp_lora["activated_loras"]):
                             dprint_func(f"[LORA_CONFIG_OUTPUT] Task {task_id}:   [{i}] '{lora_path}'")
-                        
+
                         generation_params["activated_loras"] = wgp_lora["activated_loras"]
                         generation_params["loras_multipliers"] = wgp_lora["loras_multipliers"]
                         headless_logger.info(f"Resolved {len(wgp_lora['activated_loras'])} LoRAs from phase_config", task_id=task_id)
+                elif segment_lora_config:
+                    dprint_func(f"[LORA_CONFIG_OUTPUT] Task {task_id}: Skipping phase_config LoRAs (using segment-specific LoRAs instead)")
                 
                 if "_patch_config" in parsed_phase_config:
                     apply_phase_config_patch(parsed_phase_config, model_name, task_id)
 
             except Exception as e:
                 raise ValueError(f"Task {task_id}: Invalid phase_config: {e}")
+        else:
+            dprint_func(f"[PER_SEGMENT_PHASE_CONFIG] Task {task_id}: No phase_config found - using explicit params only")
+
+        # Summary log for per-segment overrides
+        dprint_func(f"[PER_SEGMENT_HANDLER] Task {task_id}: ========== Per-Segment Override Summary ==========")
+        dprint_func(f"[PER_SEGMENT_HANDLER] Task {task_id}: LoRAs applied: {generation_params.get('activated_loras', [])}")
+        dprint_func(f"[PER_SEGMENT_HANDLER] Task {task_id}: LoRA multipliers: {generation_params.get('loras_multipliers', '')}")
+        dprint_func(f"[PER_SEGMENT_HANDLER] Task {task_id}: num_inference_steps: {generation_params.get('num_inference_steps', 'not set')}")
+        dprint_func(f"[PER_SEGMENT_HANDLER] Task {task_id}: guidance_scale: {generation_params.get('guidance_scale', 'not set')}")
+        dprint_func(f"[PER_SEGMENT_HANDLER] Task {task_id}: ================================================")
 
         if guide_video_path: generation_params["video_guide"] = str(guide_video_path)
         if mask_video_path_for_wgp: generation_params["video_mask"] = str(mask_video_path_for_wgp.resolve())
