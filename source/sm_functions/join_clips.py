@@ -1034,14 +1034,53 @@ def _handle_join_clips_task(
                         # Return transition metadata as JSON
                         # The completion logic in db_operations handles JSON outputs specially:
                         # it extracts the storage_path from the URL and stores the full JSON in output_location
+
+                        # GROUND TRUTH: Context is PRESERVED (black mask), gap is GENERATED (white mask)
+                        # We put exactly context_from_clip1 + gap_for_guide + context_from_clip2 in the guide
+                        # The mask preserves context frames, so they should match what we put in
+                        # If actual frame count differs, it's the GAP that changed, not context
                         actual_ctx_clip1 = context_from_clip1 if replace_mode else context_frame_count
                         actual_ctx_clip2 = context_from_clip2 if replace_mode else context_frame_count
+
+                        # Calculate actual gap from ground truth: total - context
+                        actual_gap = actual_transition_frames - actual_ctx_clip1 - actual_ctx_clip2
+
+                        # Sanity check: gap should be positive and reasonable
+                        if actual_gap < 0:
+                            dprint(f"[JOIN_CLIPS] Task {task_id}: ⚠️ INVALID: Calculated negative gap ({actual_gap}). This shouldn't happen!")
+                            dprint(f"[JOIN_CLIPS] Task {task_id}:   actual_frames={actual_transition_frames}, ctx1={actual_ctx_clip1}, ctx2={actual_ctx_clip2}")
+                            # Fall back to requested values - something is very wrong
+                            actual_gap = gap_for_guide
+
+                        # Log if gap differs from what we requested (indicates VACE quantization)
+                        if actual_gap != gap_for_guide:
+                            dprint(f"[JOIN_CLIPS] Task {task_id}: ⚠️ Gap adjusted by VACE from {gap_for_guide} to {actual_gap}")
+                            # Recalculate gap splits proportionally
+                            if gap_for_guide > 0:
+                                ratio = gap_from_clip1 / gap_for_guide
+                                actual_gap_from_clip1 = round(actual_gap * ratio)
+                                actual_gap_from_clip2 = actual_gap - actual_gap_from_clip1
+                            else:
+                                actual_gap_from_clip1 = actual_gap // 2
+                                actual_gap_from_clip2 = actual_gap - actual_gap_from_clip1
+                            gap_from_clip1 = actual_gap_from_clip1
+                            gap_from_clip2 = actual_gap_from_clip2
+                            dprint(f"[JOIN_CLIPS] Task {task_id}: Gap splits adjusted to ({gap_from_clip1}, {gap_from_clip2})")
+
                         actual_blend = min(actual_ctx_clip1, actual_ctx_clip2, max_safe_blend)
+
+                        # Log ground truth values that will be reported
+                        dprint(f"[JOIN_CLIPS] Task {task_id}: GROUND TRUTH for transition_only output:")
+                        dprint(f"[JOIN_CLIPS]   frames={actual_transition_frames} (actual from VACE)")
+                        dprint(f"[JOIN_CLIPS]   structure: [{actual_ctx_clip1} ctx] + [{actual_gap} gap] + [{actual_ctx_clip2} ctx]")
+                        dprint(f"[JOIN_CLIPS]   gap_splits: ({gap_from_clip1}, {gap_from_clip2})")
+                        dprint(f"[JOIN_CLIPS]   blend_frames={actual_blend}")
 
                         return True, json.dumps({
                             "transition_url": storage_url,
                             "transition_index": task_params_from_db.get("transition_index", 0),
                             "frames": actual_transition_frames,
+                            "gap_frames": actual_gap,  # Actual generated gap (ground truth)
                             "gap_from_clip1": gap_from_clip1,
                             "gap_from_clip2": gap_from_clip2,
                             "blend_frames": actual_blend,
@@ -1421,17 +1460,28 @@ def _handle_join_final_stitch(
                 ctx_clip2 = trans_data.get("context_from_clip2", blend_frames)
                 trans_blend = trans_data.get("blend_frames", min(ctx_clip1, ctx_clip2))
 
+                trans_frames = trans_data.get("frames")
+                gap_frames = trans_data.get("gap_frames")
+
+                # Verify structure consistency: frames = ctx1 + gap + ctx2
+                if trans_frames and gap_frames:
+                    expected_total = ctx_clip1 + gap_frames + ctx_clip2
+                    if expected_total != trans_frames:
+                        dprint(f"[FINAL_STITCH] Task {task_id}: ⚠️ Transition {i} structure mismatch!")
+                        dprint(f"[FINAL_STITCH]   frames={trans_frames}, but ctx1({ctx_clip1}) + gap({gap_frames}) + ctx2({ctx_clip2}) = {expected_total}")
+
                 transitions.append({
                     "url": trans_url,
                     "index": trans_data.get("transition_index", i),
-                    "frames": trans_data.get("frames"),
+                    "frames": trans_frames,
+                    "gap_frames": gap_frames,
                     "blend_frames": trans_blend,
                     "context_from_clip1": ctx_clip1,  # For clip→transition crossfade
                     "context_from_clip2": ctx_clip2,  # For transition→clip crossfade
                     "gap_from_clip1": trans_data.get("gap_from_clip1", gap_from_clip1),
                     "gap_from_clip2": trans_data.get("gap_from_clip2", gap_from_clip2),
                 })
-                dprint(f"[FINAL_STITCH] Task {task_id}: Transition {i}: blend={trans_blend}, ctx1={ctx_clip1}, ctx2={ctx_clip2}")
+                dprint(f"[FINAL_STITCH] Task {task_id}: Transition {i}: frames={trans_frames}, structure=[{ctx_clip1}+{gap_frames}+{ctx_clip2}], blend={trans_blend}")
             except json.JSONDecodeError:
                 # Fallback: treat as direct URL (legacy mode)
                 transitions.append({
