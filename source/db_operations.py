@@ -439,28 +439,54 @@ def _orchestrator_has_incomplete_children(orchestrator_task_id: str) -> bool:
     Check if an orchestrator has child tasks that are not yet complete.
     Used to prevent re-running orchestrators that are waiting for children.
     """
-    if not SUPABASE_CLIENT:
-        return False  # Can't check, assume no children
-    
-    try:
-        # Query for child tasks referencing this orchestrator
-        response = SUPABASE_CLIENT.table(PG_TABLE_NAME)\
-            .select("id, status")\
-            .contains("params", {"orchestrator_task_id_ref": orchestrator_task_id})\
-            .execute()
-        
-        if not response.data:
-            return False  # No children found
-        
-        # Check if any child is not complete
-        for child in response.data:
+    def _check_children(children_data: list) -> bool:
+        """Check if any child is not complete."""
+        for child in children_data:
             status = (child.get("status") or "").lower()
             if status not in ("complete", "failed", "cancelled", "canceled", "error"):
                 dprint(f"[RECOVERY_CHECK] Orchestrator {orchestrator_task_id} has incomplete child {child['id']} (status={status})")
                 return True
-        
-        return False  # All children are in terminal state
-        
+        return False
+
+    # Try edge function first (works for local workers without service key)
+    edge_url = (
+        os.getenv("SUPABASE_EDGE_GET_ORCHESTRATOR_CHILDREN_URL")
+        or (f"{SUPABASE_URL.rstrip('/')}/functions/v1/get-orchestrator-children" if SUPABASE_URL else None)
+    )
+
+    if edge_url and SUPABASE_ACCESS_TOKEN:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {SUPABASE_ACCESS_TOKEN}"
+        }
+        payload = {"orchestrator_task_id": orchestrator_task_id}
+
+        try:
+            resp = requests.post(edge_url, json=payload, headers=headers, timeout=30)
+            if resp.status_code == 200:
+                data = resp.json()
+                tasks = data.get("tasks", [])
+                if not tasks:
+                    return False  # No children found
+                return _check_children(tasks)
+        except Exception as e:
+            dprint(f"[RECOVERY_CHECK] Edge function failed: {e}")
+
+    # Fallback to direct query if edge function not available or failed
+    if not SUPABASE_CLIENT:
+        return False  # Can't check, assume no children
+
+    try:
+        response = SUPABASE_CLIENT.table(PG_TABLE_NAME)\
+            .select("id, status")\
+            .contains("params", {"orchestrator_task_id_ref": orchestrator_task_id})\
+            .execute()
+
+        if not response.data:
+            return False  # No children found
+
+        return _check_children(response.data)
+
     except Exception as e:
         dprint(f"[RECOVERY_CHECK] Failed to check orchestrator children: {e}")
         return False  # Can't check, don't block
