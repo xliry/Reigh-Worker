@@ -1544,6 +1544,80 @@ def _handle_join_final_stitch(
             transition_paths.append(Path(local_path))
             dprint(f"[FINAL_STITCH] Task {task_id}: Downloaded transition {i}: {local_path}")
 
+        # --- 4b. PIXEL VERIFICATION: Compare transition context frames with original clips ---
+        # This verifies that VACE preserved context frames pixel-identically
+        dprint(f"[FINAL_STITCH] Task {task_id}: Verifying pixel alignment between clips and transitions...")
+
+        for i, trans in enumerate(transitions):
+            ctx1 = trans.get("context_from_clip1", 0)
+            ctx2 = trans.get("context_from_clip2", 0)
+
+            if ctx1 > 0 and i < len(clip_paths):
+                # Compare: clip[i]'s last ctx1 frames (before gap) vs transition's first ctx1 frames
+                try:
+                    clip_frames_list = extract_frames_from_video(str(clip_paths[i]), dprint_func=dprint)
+                    trans_frames_list = extract_frames_from_video(str(transition_paths[i]), dprint_func=dprint)
+
+                    if clip_frames_list and trans_frames_list:
+                        # Clip context: last (gap_from_clip1 + ctx1) to last gap_from_clip1 frames
+                        # i.e., frames that will remain after trimming, specifically the last ctx1 of those
+                        gap1 = trans.get("gap_from_clip1", gap_from_clip1)
+                        clip_ctx_start = len(clip_frames_list) - gap1 - ctx1
+                        clip_ctx_end = len(clip_frames_list) - gap1
+
+                        clip_context = clip_frames_list[clip_ctx_start:clip_ctx_end]
+                        trans_context = trans_frames_list[:ctx1]
+
+                        if len(clip_context) == len(trans_context) == ctx1:
+                            # Compare first and last frame of context region
+                            import numpy as np
+
+                            # First frame comparison
+                            diff_first = np.abs(clip_context[0].astype(float) - trans_context[0].astype(float)).mean()
+                            # Last frame comparison
+                            diff_last = np.abs(clip_context[-1].astype(float) - trans_context[-1].astype(float)).mean()
+
+                            if diff_first < 1.0 and diff_last < 1.0:
+                                dprint(f"[PIXEL_CHECK] ✓ Transition {i} START context: PIXEL IDENTICAL (diff={diff_first:.2f}, {diff_last:.2f})")
+                            else:
+                                dprint(f"[PIXEL_CHECK] ⚠️ Transition {i} START context: MISMATCH DETECTED!")
+                                dprint(f"[PIXEL_CHECK]   First frame diff: {diff_first:.2f}, Last frame diff: {diff_last:.2f}")
+                                dprint(f"[PIXEL_CHECK]   Clip frames [{clip_ctx_start}:{clip_ctx_end}] vs Transition frames [0:{ctx1}]")
+                        else:
+                            dprint(f"[PIXEL_CHECK] ⚠️ Transition {i}: Frame count mismatch for START context")
+                            dprint(f"[PIXEL_CHECK]   Expected {ctx1}, got clip={len(clip_context)}, trans={len(trans_context)}")
+                except Exception as e:
+                    dprint(f"[PIXEL_CHECK] ⚠️ Transition {i}: Error comparing START context: {e}")
+
+            if ctx2 > 0 and i + 1 < len(clip_paths):
+                # Compare: transition's last ctx2 frames vs clip[i+1]'s first ctx2 frames (after gap)
+                try:
+                    next_clip_frames = extract_frames_from_video(str(clip_paths[i + 1]), dprint_func=dprint)
+                    trans_frames_list = extract_frames_from_video(str(transition_paths[i]), dprint_func=dprint)
+
+                    if next_clip_frames and trans_frames_list:
+                        gap2 = trans.get("gap_from_clip2", gap_from_clip2)
+                        # Next clip context: frames [gap2 : gap2 + ctx2]
+                        next_clip_context = next_clip_frames[gap2:gap2 + ctx2]
+                        trans_end_context = trans_frames_list[-ctx2:]
+
+                        if len(next_clip_context) == len(trans_end_context) == ctx2:
+                            import numpy as np
+
+                            diff_first = np.abs(next_clip_context[0].astype(float) - trans_end_context[0].astype(float)).mean()
+                            diff_last = np.abs(next_clip_context[-1].astype(float) - trans_end_context[-1].astype(float)).mean()
+
+                            if diff_first < 1.0 and diff_last < 1.0:
+                                dprint(f"[PIXEL_CHECK] ✓ Transition {i} END context: PIXEL IDENTICAL (diff={diff_first:.2f}, {diff_last:.2f})")
+                            else:
+                                dprint(f"[PIXEL_CHECK] ⚠️ Transition {i} END context: MISMATCH DETECTED!")
+                                dprint(f"[PIXEL_CHECK]   First frame diff: {diff_first:.2f}, Last frame diff: {diff_last:.2f}")
+                                dprint(f"[PIXEL_CHECK]   Next clip frames [{gap2}:{gap2 + ctx2}] vs Transition frames [-{ctx2}:]")
+                        else:
+                            dprint(f"[PIXEL_CHECK] ⚠️ Transition {i}: Frame count mismatch for END context")
+                except Exception as e:
+                    dprint(f"[PIXEL_CHECK] ⚠️ Transition {i}: Error comparing END context: {e}")
+
         # --- 5. Trim Clips and Build Stitch List ---
         dprint(f"[FINAL_STITCH] Task {task_id}: Preparing clips for stitching...")
 
