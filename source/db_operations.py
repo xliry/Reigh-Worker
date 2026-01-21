@@ -85,14 +85,16 @@ def _call_edge_function_with_retry(
     max_retries: int = 3,
     method: str = "POST",
     fallback_url: str | None = None,  # Optional 404 fallback URL
+    retry_on_404_patterns: list[str] | None = None,  # Patterns in 404 response body to retry
 ) -> tuple[httpx.Response | None, str | None]:
     """
     Call a Supabase edge function with retry logic for transient errors.
-    
+
     Retries on:
     - 502 Bad Gateway, 503 Service Unavailable, 504 Gateway Timeout
     - Network errors (TimeoutException, RequestError)
-    
+    - 404 errors if response body matches retry_on_404_patterns (e.g. "Task not found")
+
     Args:
         edge_url: The edge function URL
         payload: JSON payload (for POST) or None
@@ -103,12 +105,13 @@ def _call_edge_function_with_retry(
         max_retries: Maximum retry attempts
         method: HTTP method ("POST" or "PUT")
         fallback_url: Optional fallback URL to try on 404
-    
+        retry_on_404_patterns: List of substrings - if 404 response contains any, retry
+
     Returns:
         Tuple of (response, error_message)
         - On success: (response, None)
         - On failure: (response_or_None, standardized_error_message)
-        
+
         Error message format for detection:
         "[EDGE_FAIL:{function_name}:{error_type}] {details}"
     """
@@ -143,12 +146,23 @@ def _call_edge_function_with_retry(
                         resp = httpx.put(fallback_url, content=payload, headers=headers, timeout=current_timeout)
                 else:
                     resp = httpx.post(fallback_url, json=payload, headers=headers, timeout=current_timeout)
-            
+
             # Success
             if resp.status_code in [200, 201]:
                 return resp, None
-            
-            # Retryable error
+
+            # Retry on specific 404 patterns (e.g. "Task not found" due to replication lag)
+            if resp.status_code == 404 and retry_on_404_patterns and attempt < max_retries - 1:
+                resp_text = resp.text
+                should_retry = any(pattern.lower() in resp_text.lower() for pattern in retry_on_404_patterns)
+                if should_retry:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    print(f"[RETRY] ⚠️ {function_name} got 404 with retryable pattern{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                    dprint(f"[RETRY] 404 response: {resp_text[:200]}")
+                    time.sleep(wait_time)
+                    continue
+
+            # Retryable error (5xx)
             if resp.status_code in RETRYABLE_STATUS_CODES and attempt < max_retries - 1:
                 wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
                 print(f"[RETRY] ⚠️ {function_name} got {resp.status_code}{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
@@ -204,6 +218,7 @@ def _call_complete_task_with_retry(
     """
     Call complete_task edge function with retry logic.
     Wrapper around _call_edge_function_with_retry for backwards compatibility.
+    Retries on "Task not found" 404 errors (can occur due to DB replication lag).
     """
     resp, error_msg = _call_edge_function_with_retry(
         edge_url=edge_url,
@@ -214,12 +229,13 @@ def _call_complete_task_with_retry(
         timeout=timeout,
         max_retries=max_retries,
         fallback_url=None,
+        retry_on_404_patterns=["Task not found", "not found"],  # Retry on transient 404s
     )
-    
+
     # Log error but don't return it - caller handles response checking
     if error_msg:
         dprint(f"[DEBUG] complete_task error: {error_msg}")
-    
+
     return resp
 
 # -----------------------------------------------------------------------------
@@ -784,6 +800,7 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
                         timeout=60,
                         max_retries=3,
                         fallback_url=None,
+                        retry_on_404_patterns=["Task not found", "not found"],
                     )
 
                     if resp is not None and resp.status_code == 200:
@@ -961,6 +978,7 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
                         timeout=60,
                         max_retries=3,
                         fallback_url=None,
+                        retry_on_404_patterns=["Task not found", "not found"],
                     )
 
                     if resp is not None and resp.status_code == 200:
@@ -1032,6 +1050,7 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
                                     timeout=30,
                                     max_retries=3,
                                     fallback_url=None,
+                                    retry_on_404_patterns=["Task not found", "not found"],
                                 )
 
                                 if resp is not None and resp.status_code == 200:
@@ -1125,6 +1144,7 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
                     timeout=30,
                     max_retries=3,
                     fallback_url=None,
+                    retry_on_404_patterns=["Task not found", "not found"],
                 )
 
                 if resp is not None and resp.status_code == 200:
