@@ -1076,17 +1076,66 @@ def _handle_join_clips_task(
                         dprint(f"[JOIN_CLIPS]   gap_splits: ({gap_from_clip1}, {gap_from_clip2})")
                         dprint(f"[JOIN_CLIPS]   blend_frames={actual_blend}")
 
+                        # Build comprehensive debugging data for the output_location
+                        # This helps diagnose alignment issues in the final stitch
+
+                        # Calculate clip1 context indices (REPLACE mode: before gap, INSERT mode: at end)
+                        if replace_mode:
+                            clip1_ctx_start = start_frame_count - gap_from_clip1 - actual_ctx_clip1
+                            clip1_ctx_end = start_frame_count - gap_from_clip1
+                            clip2_ctx_start = gap_from_clip2
+                            clip2_ctx_end = gap_from_clip2 + actual_ctx_clip2
+                        else:
+                            clip1_ctx_start = start_frame_count - actual_ctx_clip1
+                            clip1_ctx_end = start_frame_count
+                            clip2_ctx_start = 0
+                            clip2_ctx_end = actual_ctx_clip2
+
                         return True, json.dumps({
+                            # --- Core transition data ---
                             "transition_url": storage_url,
                             "transition_index": task_params_from_db.get("transition_index", 0),
                             "frames": actual_transition_frames,
+
+                            # --- Gap data (ground truth from VACE) ---
                             "gap_frames": actual_gap,  # Actual generated gap (ground truth)
-                            "gap_from_clip1": gap_from_clip1,
-                            "gap_from_clip2": gap_from_clip2,
-                            "blend_frames": actual_blend,
+                            "gap_from_clip1": gap_from_clip1,  # Frames trimmed from clip1 END
+                            "gap_from_clip2": gap_from_clip2,  # Frames trimmed from clip2 START
+                            "requested_gap": gap_frame_count,  # Original requested gap
+                            "quantized_gap": gap_for_guide,    # After VACE 4n+1 quantization
+
+                            # --- Context data ---
                             "context_from_clip1": actual_ctx_clip1,
                             "context_from_clip2": actual_ctx_clip2,
-                            "context_frame_count": context_frame_count  # Original requested (for reference)
+                            "context_frame_count": context_frame_count,  # Original requested
+                            "blend_frames": actual_blend,
+
+                            # --- Source clip info (for alignment verification) ---
+                            "clip1_total_frames": start_frame_count,
+                            "clip2_total_frames": end_frame_count,
+
+                            # --- Frame indices showing exactly what was used ---
+                            # Clip1: context extracted from [clip1_ctx_start:clip1_ctx_end)
+                            # Clip1: frames [clip1_ctx_end:clip1_total_frames) are gap (trimmed)
+                            "clip1_context_start_idx": clip1_ctx_start,
+                            "clip1_context_end_idx": clip1_ctx_end,
+
+                            # Clip2: frames [0:gap_from_clip2) are gap (trimmed)
+                            # Clip2: context extracted from [clip2_ctx_start:clip2_ctx_end)
+                            "clip2_context_start_idx": clip2_ctx_start,
+                            "clip2_context_end_idx": clip2_ctx_end,
+
+                            # --- Transition structure (for debugging) ---
+                            # transition[0:ctx1] = clip1[clip1_ctx_start:clip1_ctx_end] (context before)
+                            # transition[ctx1:ctx1+gap] = generated gap frames
+                            # transition[ctx1+gap:end] = clip2[clip2_ctx_start:clip2_ctx_end] (context after)
+                            "transition_structure": f"[{actual_ctx_clip1} ctx1] + [{actual_gap} gap] + [{actual_ctx_clip2} ctx2]",
+
+                            # --- Final stitch guidance ---
+                            # When stitching: trim clip1 end by gap_from_clip1, trim clip2 start by gap_from_clip2
+                            # Then crossfade: clip1_trimmed[-ctx1:] with transition[0:ctx1]
+                            #                 transition[-ctx2:] with clip2_trimmed[0:ctx2]
+                            "mode": "replace" if replace_mode else "insert",
                         })
 
                     # --- 9. Concatenate Full Clips with Transition ---
@@ -1470,6 +1519,18 @@ def _handle_join_final_stitch(
                         dprint(f"[FINAL_STITCH] Task {task_id}: ⚠️ Transition {i} structure mismatch!")
                         dprint(f"[FINAL_STITCH]   frames={trans_frames}, but ctx1({ctx_clip1}) + gap({gap_frames}) + ctx2({ctx_clip2}) = {expected_total}")
 
+                # Extract gap values from transition output (ground truth from VACE)
+                trans_gap1 = trans_data.get("gap_from_clip1")
+                trans_gap2 = trans_data.get("gap_from_clip2")
+
+                # Log whether we're using ground truth or fallback values
+                if trans_gap1 is not None and trans_gap2 is not None:
+                    dprint(f"[FINAL_STITCH] Task {task_id}: Transition {i}: Using ground truth gap values from VACE: gap1={trans_gap1}, gap2={trans_gap2}")
+                else:
+                    dprint(f"[FINAL_STITCH] Task {task_id}: ⚠️ Transition {i}: Missing gap values in output, using fallback: gap1={gap_from_clip1}, gap2={gap_from_clip2}")
+                    trans_gap1 = gap_from_clip1
+                    trans_gap2 = gap_from_clip2
+
                 transitions.append({
                     "url": trans_url,
                     "index": trans_data.get("transition_index", i),
@@ -1478,8 +1539,15 @@ def _handle_join_final_stitch(
                     "blend_frames": trans_blend,
                     "context_from_clip1": ctx_clip1,  # For clip→transition crossfade
                     "context_from_clip2": ctx_clip2,  # For transition→clip crossfade
-                    "gap_from_clip1": trans_data.get("gap_from_clip1", gap_from_clip1),
-                    "gap_from_clip2": trans_data.get("gap_from_clip2", gap_from_clip2),
+                    "gap_from_clip1": trans_gap1,
+                    "gap_from_clip2": trans_gap2,
+                    # Additional debug info from transition output
+                    "clip1_context_start_idx": trans_data.get("clip1_context_start_idx"),
+                    "clip1_context_end_idx": trans_data.get("clip1_context_end_idx"),
+                    "clip2_context_start_idx": trans_data.get("clip2_context_start_idx"),
+                    "clip2_context_end_idx": trans_data.get("clip2_context_end_idx"),
+                    "clip1_total_frames": trans_data.get("clip1_total_frames"),
+                    "clip2_total_frames": trans_data.get("clip2_total_frames"),
                 })
                 dprint(f"[FINAL_STITCH] Task {task_id}: Transition {i}: frames={trans_frames}, structure=[{ctx_clip1}+{gap_frames}+{ctx_clip2}], blend={trans_blend}")
             except json.JSONDecodeError:
@@ -1630,15 +1698,40 @@ def _handle_join_final_stitch(
             if not clip_frames:
                 return False, f"Could not get frame count for clip {i}"
 
-            # Determine trim amounts
-            trim_start = gap_from_clip2 if i > 0 else 0  # First clip: no start trim
-            trim_end = gap_from_clip1 if i < num_clips - 1 else 0  # Last clip: no end trim
+            # Determine trim amounts using PER-TRANSITION gap values (ground truth from VACE)
+            # trim_start: how much to trim from START of this clip
+            #   - Uses gap_from_clip2 from the PREVIOUS transition (i-1)
+            #   - Because transition[i-1] connects clip[i-1] -> clip[i], and gap_from_clip2 is how much of clip[i]'s start was used as gap
+            # trim_end: how much to trim from END of this clip
+            #   - Uses gap_from_clip1 from the CURRENT transition (i)
+            #   - Because transition[i] connects clip[i] -> clip[i+1], and gap_from_clip1 is how much of clip[i]'s end was used as gap
+
+            if i > 0:
+                # Get gap_from_clip2 from previous transition (transition i-1 connects to this clip)
+                prev_trans = transitions[i - 1]
+                trim_start = prev_trans.get("gap_from_clip2", gap_from_clip2)
+                trim_start_source = f"trans[{i-1}].gap_from_clip2"
+            else:
+                trim_start = 0  # First clip: no start trim
+                trim_start_source = "none (first clip)"
+
+            if i < num_clips - 1:
+                # Get gap_from_clip1 from current transition (this clip connects to transition i)
+                curr_trans = transitions[i]
+                trim_end = curr_trans.get("gap_from_clip1", gap_from_clip1)
+                trim_end_source = f"trans[{i}].gap_from_clip1"
+            else:
+                trim_end = 0  # Last clip: no end trim
+                trim_end_source = "none (last clip)"
 
             frames_to_keep = clip_frames - trim_start - trim_end
             if frames_to_keep <= 0:
                 return False, f"Clip {i} has {clip_frames} frames but needs {trim_start + trim_end} trimmed"
 
-            dprint(f"[FINAL_STITCH] Task {task_id}: Clip {i}: {clip_frames} frames, trim_start={trim_start}, trim_end={trim_end}, keeping={frames_to_keep}")
+            # Log trim details with source of values
+            dprint(f"[FINAL_STITCH] Task {task_id}: Clip {i}: {clip_frames} frames total")
+            dprint(f"[FINAL_STITCH]   trim_start={trim_start} (from {trim_start_source}), trim_end={trim_end} (from {trim_end_source})")
+            dprint(f"[FINAL_STITCH]   keeping frames [{trim_start}:{clip_frames - trim_end}] = {frames_to_keep} frames")
 
             # Extract trimmed clip
             with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir=stitch_dir) as tf:
