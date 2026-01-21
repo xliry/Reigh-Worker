@@ -1564,6 +1564,38 @@ def _handle_join_final_stitch(
         # Sort transitions by index
         transitions.sort(key=lambda t: t["index"])
 
+        # --- ALIGNMENT VERIFICATION TABLE ---
+        # This is the key diagnostic: shows exactly what each transition expects
+        # and makes mismatches immediately obvious
+        dprint(f"[FINAL_STITCH] Task {task_id}: ")
+        dprint(f"[FINAL_STITCH] ╔══════════════════════════════════════════════════════════════════════════════╗")
+        dprint(f"[FINAL_STITCH] ║                      TRANSITION ALIGNMENT TABLE                              ║")
+        dprint(f"[FINAL_STITCH] ╠══════════════════════════════════════════════════════════════════════════════╣")
+        dprint(f"[FINAL_STITCH] ║ Trans │ Clip1 Frames │ Clip1 Ctx Idx  │ Clip2 Frames │ Clip2 Ctx Idx  │ Gap  ║")
+        dprint(f"[FINAL_STITCH] ╠══════════════════════════════════════════════════════════════════════════════╣")
+
+        for i, trans in enumerate(transitions):
+            clip1_total = trans.get("clip1_total_frames", "?")
+            clip2_total = trans.get("clip2_total_frames", "?")
+            ctx1_start = trans.get("clip1_context_start_idx", "?")
+            ctx1_end = trans.get("clip1_context_end_idx", "?")
+            ctx2_start = trans.get("clip2_context_start_idx", "?")
+            ctx2_end = trans.get("clip2_context_end_idx", "?")
+            gap1 = trans.get("gap_from_clip1", "?")
+            gap2 = trans.get("gap_from_clip2", "?")
+
+            # Format context indices
+            ctx1_str = f"[{ctx1_start}:{ctx1_end})" if ctx1_start != "?" else "N/A"
+            ctx2_str = f"[{ctx2_start}:{ctx2_end})" if ctx2_start != "?" else "N/A"
+
+            dprint(f"[FINAL_STITCH] ║  {i:2d}   │     {str(clip1_total):4s}     │ {ctx1_str:14s} │     {str(clip2_total):4s}     │ {ctx2_str:14s} │{gap1}/{gap2:2}║")
+
+        dprint(f"[FINAL_STITCH] ╚══════════════════════════════════════════════════════════════════════════════╝")
+        dprint(f"[FINAL_STITCH] ")
+        dprint(f"[FINAL_STITCH] Legend: Ctx Idx = context frame indices extracted for VACE")
+        dprint(f"[FINAL_STITCH]         Gap = gap_from_clip1/gap_from_clip2 (frames trimmed from each clip)")
+        dprint(f"[FINAL_STITCH] ")
+
         # Validate gap values are consistent across transitions (current architecture assumes this)
         if len(transitions) > 1:
             first_gap1 = transitions[0].get("gap_from_clip1", gap_from_clip1)
@@ -1572,11 +1604,9 @@ def _handle_join_final_stitch(
                 t_gap1 = t.get("gap_from_clip1", gap_from_clip1)
                 t_gap2 = t.get("gap_from_clip2", gap_from_clip2)
                 if t_gap1 != first_gap1 or t_gap2 != first_gap2:
-                    dprint(f"[FINAL_STITCH] Task {task_id}: WARNING - Inconsistent gap values across transitions!")
+                    dprint(f"[FINAL_STITCH] Task {task_id}: ⚠️ WARNING - Inconsistent gap values across transitions!")
                     dprint(f"[FINAL_STITCH]   Transition 0: gap1={first_gap1}, gap2={first_gap2}")
                     dprint(f"[FINAL_STITCH]   Transition {t['index']}: gap1={t_gap1}, gap2={t_gap2}")
-                    # Use the values from task params as canonical
-                    dprint(f"[FINAL_STITCH]   Using task params: gap1={gap_from_clip1}, gap2={gap_from_clip2}")
 
         # --- 4. Download All Videos ---
         dprint(f"[FINAL_STITCH] Task {task_id}: Downloading clips and transitions...")
@@ -1611,6 +1641,39 @@ def _handle_join_final_stitch(
                 return False, f"Failed to download transition {i}: {trans_url}"
             transition_paths.append(Path(local_path))
             dprint(f"[FINAL_STITCH] Task {task_id}: Downloaded transition {i}: {local_path}")
+
+        # --- 4a. FRAME COUNT VERIFICATION ---
+        # Verify actual clip frame counts match what transitions expected
+        dprint(f"[FINAL_STITCH] Task {task_id}: Verifying clip frame counts...")
+        frame_count_mismatches = []
+
+        for i, clip_path in enumerate(clip_paths):
+            actual_frames, _ = get_video_frame_count_and_fps(str(clip_path))
+
+            # Check against transitions that reference this clip
+            # Transition i uses clip i as clip1 (if i < num_transitions)
+            if i < len(transitions):
+                expected_clip1 = transitions[i].get("clip1_total_frames")
+                if expected_clip1 is not None and expected_clip1 != actual_frames:
+                    frame_count_mismatches.append(
+                        f"Clip {i}: actual={actual_frames}, trans[{i}] expected clip1={expected_clip1}"
+                    )
+                    dprint(f"[FINAL_STITCH] Task {task_id}: ⚠️ FRAME COUNT MISMATCH: Clip {i} has {actual_frames} frames, but transition {i} expected {expected_clip1}")
+
+            # Transition i-1 uses clip i as clip2 (if i > 0)
+            if i > 0:
+                expected_clip2 = transitions[i - 1].get("clip2_total_frames")
+                if expected_clip2 is not None and expected_clip2 != actual_frames:
+                    frame_count_mismatches.append(
+                        f"Clip {i}: actual={actual_frames}, trans[{i-1}] expected clip2={expected_clip2}"
+                    )
+                    dprint(f"[FINAL_STITCH] Task {task_id}: ⚠️ FRAME COUNT MISMATCH: Clip {i} has {actual_frames} frames, but transition {i-1} expected {expected_clip2}")
+
+        if frame_count_mismatches:
+            dprint(f"[FINAL_STITCH] Task {task_id}: ❌ FOUND {len(frame_count_mismatches)} FRAME COUNT MISMATCHES!")
+            dprint(f"[FINAL_STITCH] Task {task_id}: This may indicate clips were re-encoded or transitions used different source files.")
+        else:
+            dprint(f"[FINAL_STITCH] Task {task_id}: ✓ All clip frame counts match transition expectations")
 
         # --- 4b. PIXEL VERIFICATION: Compare transition context frames with original clips ---
         # This verifies that VACE preserved context frames pixel-identically
@@ -1768,6 +1831,64 @@ def _handle_join_final_stitch(
                 stitch_blends.append(blend_trans_to_clip)  # Blend between transition and next clip
 
                 dprint(f"[FINAL_STITCH] Task {task_id}: Crossfades for transition {i}: clip→trans={blend_clip_to_trans}, trans→clip={blend_trans_to_clip}")
+
+        # --- 5b. FINAL FRAME ACCOUNTING ---
+        # Show exactly how the final video will be composed
+        dprint(f"[FINAL_STITCH] Task {task_id}: ")
+        dprint(f"[FINAL_STITCH] ╔══════════════════════════════════════════════════════════════════════════════╗")
+        dprint(f"[FINAL_STITCH] ║                        FINAL VIDEO FRAME ACCOUNTING                         ║")
+        dprint(f"[FINAL_STITCH] ╠══════════════════════════════════════════════════════════════════════════════╣")
+
+        final_frame_position = 0
+        for idx, video_path in enumerate(stitch_videos):
+            video_frames, _ = get_video_frame_count_and_fps(str(video_path))
+            if video_frames is None:
+                video_frames = 0
+
+            # Determine if this is a clip or transition
+            # Pattern: clip0, trans0, clip1, trans1, clip2, ... (clips at even indices, transitions at odd)
+            is_clip = (idx % 2 == 0)
+            source_idx = idx // 2
+
+            if is_clip:
+                # Get the original clip info
+                orig_frames, _ = get_video_frame_count_and_fps(str(clip_paths[source_idx])) if source_idx < len(clip_paths) else (0, 0)
+
+                # Reconstruct trim info
+                if source_idx > 0:
+                    t_start = transitions[source_idx - 1].get("gap_from_clip2", gap_from_clip2)
+                else:
+                    t_start = 0
+                if source_idx < len(transitions):
+                    t_end = transitions[source_idx].get("gap_from_clip1", gap_from_clip1)
+                else:
+                    t_end = 0
+
+                source_desc = f"Clip {source_idx}: frames [{t_start}:{orig_frames - t_end}]"
+            else:
+                trans_idx = source_idx
+                trans_info = transitions[trans_idx] if trans_idx < len(transitions) else {}
+                ctx1 = trans_info.get("context_from_clip1", "?")
+                gap = trans_info.get("gap_frames", "?")
+                ctx2 = trans_info.get("context_from_clip2", "?")
+                source_desc = f"Trans {trans_idx}: [{ctx1} ctx1 + {gap} gap + {ctx2} ctx2]"
+
+            # Get blend info
+            blend_before = stitch_blends[idx - 1] if idx > 0 and idx - 1 < len(stitch_blends) else 0
+            blend_after = stitch_blends[idx] if idx < len(stitch_blends) else 0
+
+            end_frame = final_frame_position + video_frames - 1
+            dprint(f"[FINAL_STITCH] ║ [{final_frame_position:5d}-{end_frame:5d}] {source_desc:<45s} ({video_frames:3d}f) ║")
+
+            if blend_after > 0 and idx < len(stitch_videos) - 1:
+                dprint(f"[FINAL_STITCH] ║              ↕ crossfade {blend_after} frames                                     ║")
+
+            final_frame_position += video_frames - blend_after  # Subtract overlap
+
+        dprint(f"[FINAL_STITCH] ╠══════════════════════════════════════════════════════════════════════════════╣")
+        dprint(f"[FINAL_STITCH] ║ Expected total frames (approximate): {final_frame_position:<38d} ║")
+        dprint(f"[FINAL_STITCH] ╚══════════════════════════════════════════════════════════════════════════════╝")
+        dprint(f"[FINAL_STITCH] ")
 
         # --- 6. Stitch Everything Together ---
         dprint(f"[FINAL_STITCH] Task {task_id}: Stitching {len(stitch_videos)} videos with {len(stitch_blends)} blend points...")
