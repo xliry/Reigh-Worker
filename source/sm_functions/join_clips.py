@@ -1555,8 +1555,8 @@ def _handle_join_final_stitch(
             if ctx1 > 0 and i < len(clip_paths):
                 # Compare: clip[i]'s last ctx1 frames (before gap) vs transition's first ctx1 frames
                 try:
-                    clip_frames_list = extract_frames_from_video(str(clip_paths[i]), dprint_func=dprint)
-                    trans_frames_list = extract_frames_from_video(str(transition_paths[i]), dprint_func=dprint)
+                    clip_frames_list = sm_extract_frames_from_video(str(clip_paths[i]), dprint_func=dprint)
+                    trans_frames_list = sm_extract_frames_from_video(str(transition_paths[i]), dprint_func=dprint)
 
                     if clip_frames_list and trans_frames_list:
                         # Clip context: last (gap_from_clip1 + ctx1) to last gap_from_clip1 frames
@@ -1592,8 +1592,8 @@ def _handle_join_final_stitch(
             if ctx2 > 0 and i + 1 < len(clip_paths):
                 # Compare: transition's last ctx2 frames vs clip[i+1]'s first ctx2 frames (after gap)
                 try:
-                    next_clip_frames = extract_frames_from_video(str(clip_paths[i + 1]), dprint_func=dprint)
-                    trans_frames_list = extract_frames_from_video(str(transition_paths[i]), dprint_func=dprint)
+                    next_clip_frames = sm_extract_frames_from_video(str(clip_paths[i + 1]), dprint_func=dprint)
+                    trans_frames_list = sm_extract_frames_from_video(str(transition_paths[i]), dprint_func=dprint)
 
                     if next_clip_frames and trans_frames_list:
                         gap2 = trans.get("gap_from_clip2", gap_from_clip2)
