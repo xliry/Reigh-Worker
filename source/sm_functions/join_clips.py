@@ -1525,18 +1525,24 @@ def _handle_join_final_stitch(
         # --- 1. Extract Parameters ---
         clip_list = task_params_from_db.get("clip_list", [])
         transition_task_ids = task_params_from_db.get("transition_task_ids", [])
-        gap_from_clip1 = task_params_from_db.get("gap_from_clip1", 11)
-        gap_from_clip2 = task_params_from_db.get("gap_from_clip2", 12)
         blend_frames = task_params_from_db.get("blend_frames", 15)
         target_fps = task_params_from_db.get("fps", 16)
         audio_url = task_params_from_db.get("audio_url")
+
+        # NOTE: gap_from_clip1/gap_from_clip2 are intentionally NOT read from task_params
+        # because the orchestrator calculated them from raw gap_frame_count (before 4n+1
+        # quantization), while segment tasks use quantized gap_for_guide. This mismatch
+        # caused a 1-frame alignment bug. Gap values MUST come from each transition's
+        # output_location (ground truth from VACE). Fallbacks only for legacy compatibility.
+        gap_from_clip1 = task_params_from_db.get("gap_from_clip1", 8)  # Legacy fallback only
+        gap_from_clip2 = task_params_from_db.get("gap_from_clip2", 9)  # Legacy fallback only
 
         num_clips = len(clip_list)
         num_transitions = len(transition_task_ids)
         expected_transitions = num_clips - 1
 
         dprint(f"[FINAL_STITCH] Task {task_id}: {num_clips} clips, {num_transitions} transitions")
-        dprint(f"[FINAL_STITCH] Task {task_id}: gap_from_clip1={gap_from_clip1}, gap_from_clip2={gap_from_clip2}, blend_frames={blend_frames}")
+        dprint(f"[FINAL_STITCH] Task {task_id}: blend_frames={blend_frames} (gap values from per-transition output, fallback={gap_from_clip1}/{gap_from_clip2})")
 
         if num_clips < 2:
             return False, "clip_list must contain at least 2 clips"

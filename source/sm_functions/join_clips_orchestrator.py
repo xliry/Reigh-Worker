@@ -930,17 +930,13 @@ def _create_parallel_join_tasks(
     # === Phase 2: Create final stitch task that depends on ALL transitions ===
     dprint(f"[JOIN_PARALLEL] Creating final stitch task, depends on {len(transition_task_ids)} transitions")
 
-    # Calculate gap splits from join settings
-    replace_mode = join_settings.get("replace_mode", False)
-    gap_frame_count = join_settings.get("gap_frame_count", 53)
+    # Get settings for the final stitch payload
+    # NOTE: gap_from_clip1/gap_from_clip2 are NOT passed here because:
+    # 1. The orchestrator would calculate from raw gap_frame_count (before 4n+1 quantization)
+    # 2. The segment tasks calculate from quantized gap_for_guide (after 4n+1 quantization)
+    # 3. This mismatch caused a 1-frame alignment bug
+    # 4. The final_stitch now reads these values from each transition's output_location (ground truth)
     context_frame_count = join_settings.get("context_frame_count", 8)
-
-    if replace_mode:
-        gap_from_clip1 = gap_frame_count // 2
-        gap_from_clip2 = gap_frame_count - gap_from_clip1
-    else:
-        gap_from_clip1 = 0
-        gap_from_clip2 = 0
 
     final_stitch_payload = {
         "orchestrator_task_id_ref": orchestrator_task_id_str,
@@ -953,9 +949,7 @@ def _create_parallel_join_tasks(
         # Transition task IDs to fetch outputs from
         "transition_task_ids": transition_task_ids,
 
-        # Trimming and blending parameters
-        "gap_from_clip1": gap_from_clip1,
-        "gap_from_clip2": gap_from_clip2,
+        # Blending parameters (trim values come from per-transition output_location)
         "blend_frames": min(context_frame_count, 15),  # Safe blend limit
         "fps": join_settings.get("fps") or orchestrator_payload.get("fps", 16),
 
