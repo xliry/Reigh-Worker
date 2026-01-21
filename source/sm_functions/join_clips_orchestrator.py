@@ -1016,6 +1016,37 @@ def _handle_join_clips_orchestrator_task(
         run_id = orchestrator_payload.get("run_id")
         loop_first_clip = orchestrator_payload.get("loop_first_clip", False)
 
+        # === DYNAMIC CLIP_LIST FROM SEGMENT TASKS ===
+        # If segment_task_ids is provided (from travel_orchestrator with stitch_config),
+        # fetch the output URLs from those completed tasks to build clip_list
+        segment_task_ids = orchestrator_payload.get("segment_task_ids", [])
+        if segment_task_ids and not clip_list:
+            dprint(f"[JOIN_ORCHESTRATOR] Building clip_list from {len(segment_task_ids)} segment task outputs")
+
+            built_clip_list = []
+            for i, task_id in enumerate(segment_task_ids):
+                # Fetch output URL from completed segment task
+                output_url = db_ops.get_task_output_location_from_db(task_id)
+                if not output_url:
+                    return False, f"Segment task {task_id} has no output_location (may not be complete)"
+
+                # Handle JSON output (some tasks return JSON with url inside)
+                if output_url.startswith('{'):
+                    try:
+                        output_data = json.loads(output_url)
+                        output_url = output_data.get("output_location") or output_data.get("url") or output_url
+                    except json.JSONDecodeError:
+                        pass  # Use as-is
+
+                built_clip_list.append({
+                    "url": output_url,
+                    "name": f"Segment {i + 1}"
+                })
+                dprint(f"[JOIN_ORCHESTRATOR]   Segment {i}: {output_url[:80]}...")
+
+            clip_list = built_clip_list
+            dprint(f"[JOIN_ORCHESTRATOR] Built clip_list with {len(clip_list)} clips from segment outputs")
+
         if not run_id:
             return False, "run_id is required"
 

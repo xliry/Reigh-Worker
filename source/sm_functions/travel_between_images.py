@@ -371,11 +371,17 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         )
         required_stitch_count = 1 if should_create_stitch else 0
         
-        if existing_segments or existing_stitch:
-            dprint(f"[IDEMPOTENCY] Found existing child tasks: {len(existing_segments)} segments, {len(existing_stitch)} stitch tasks")
-            
+        # Also check for join_clips_orchestrator (created when stitch_config is present)
+        existing_join_orchestrators = existing_child_tasks.get('join_clips_orchestrator', [])
+        stitch_config_present = bool(orchestrator_payload.get("stitch_config"))
+        required_join_orchestrator_count = 1 if stitch_config_present else 0
+
+        if existing_segments or existing_stitch or existing_join_orchestrators:
+            dprint(f"[IDEMPOTENCY] Found existing child tasks: {len(existing_segments)} segments, {len(existing_stitch)} stitch tasks, {len(existing_join_orchestrators)} join orchestrators")
+
             # Check if we have the expected number of tasks already
-            if len(existing_segments) >= expected_segments and len(existing_stitch) >= required_stitch_count:
+            has_required_join_orchestrator = len(existing_join_orchestrators) >= required_join_orchestrator_count
+            if len(existing_segments) >= expected_segments and len(existing_stitch) >= required_stitch_count and has_required_join_orchestrator:
                 # Clean up any duplicates but don't create new tasks
                 cleanup_summary = db_ops.cleanup_duplicate_child_tasks(orchestrator_task_id_str, expected_segments)
 
@@ -397,24 +403,29 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
 
                 all_segments_complete = all(is_complete(seg) for seg in existing_segments) if existing_segments else False
                 all_stitch_complete = True if required_stitch_count == 0 else (all(is_complete(st) for st in existing_stitch) if existing_stitch else False)
+                all_join_orchestrators_complete = True if required_join_orchestrator_count == 0 else (all(is_complete(jo) for jo in existing_join_orchestrators) if existing_join_orchestrators else False)
 
                 any_segment_failed = any(is_terminal_failure(seg) for seg in existing_segments) if existing_segments else False
                 any_stitch_failed = False if required_stitch_count == 0 else (any(is_terminal_failure(st) for st in existing_stitch) if existing_stitch else False)
+                any_join_orchestrator_failed = False if required_join_orchestrator_count == 0 else (any(is_terminal_failure(jo) for jo in existing_join_orchestrators) if existing_join_orchestrators else False)
 
                 # Also ensure we have the minimum required tasks
                 has_required_segments = len(existing_segments) >= expected_segments
                 has_required_stitch = True if required_stitch_count == 0 else (len(existing_stitch) >= 1)
 
                 # If any child task failed/cancelled, mark orchestrator as failed
-                if (any_segment_failed or any_stitch_failed) and has_required_segments and has_required_stitch:
+                if (any_segment_failed or any_stitch_failed or any_join_orchestrator_failed) and has_required_segments and has_required_stitch and has_required_join_orchestrator:
                     failed_segments = [seg for seg in existing_segments if is_terminal_failure(seg)]
                     failed_stitch = [st for st in existing_stitch if is_terminal_failure(st)]
+                    failed_join_orchestrators = [jo for jo in existing_join_orchestrators if is_terminal_failure(jo)]
 
                     error_details = []
                     if failed_segments:
                         error_details.append(f"{len(failed_segments)} segment(s) failed/cancelled")
                     if failed_stitch:
                         error_details.append(f"{len(failed_stitch)} stitch task(s) failed/cancelled")
+                    if failed_join_orchestrators:
+                        error_details.append(f"{len(failed_join_orchestrators)} join orchestrator(s) failed/cancelled")
 
                     dprint(f"[IDEMPOTENT_FAILED] Child tasks failed: {', '.join(error_details)}")
                     travel_logger.error(f"Child tasks in terminal failure state: {', '.join(error_details)}", task_id=orchestrator_task_id_str)
@@ -424,16 +435,19 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     output_message_for_orchestrator_db = f"[ORCHESTRATOR_FAILED] Child tasks failed: {', '.join(error_details)}"
                     return generation_success, output_message_for_orchestrator_db
 
-                if all_segments_complete and all_stitch_complete and has_required_segments and has_required_stitch:
+                if all_segments_complete and all_stitch_complete and all_join_orchestrators_complete and has_required_segments and has_required_stitch and has_required_join_orchestrator:
                     # All children are done! Return with special "COMPLETE" marker
-                    dprint(f"[IDEMPOTENT_COMPLETE] All {len(existing_segments)} child segments and {len(existing_stitch)} stitch tasks are complete")
+                    dprint(f"[IDEMPOTENT_COMPLETE] All {len(existing_segments)} segments, {len(existing_stitch)} stitch, {len(existing_join_orchestrators)} join orchestrators complete")
                     travel_logger.info(f"All child tasks complete, orchestrator should be marked as complete", task_id=orchestrator_task_id_str)
 
                     # Get the final output:
-                    # - If stitch exists, use its output
+                    # - If join_clips_orchestrator exists (stitch_config mode), use its output
+                    # - Else if stitch exists, use its output
                     # - Otherwise (independent segments), use the last segment's output
                     final_output = None
-                    if existing_stitch:
+                    if existing_join_orchestrators:
+                        final_output = existing_join_orchestrators[0].get('output_location')
+                    if not final_output and existing_stitch:
                         final_output = existing_stitch[0].get('output_location')
                     if not final_output and existing_segments:
                         def _seg_idx(seg):
@@ -2110,9 +2124,90 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         elif stitch_already_exists:
             dprint(f"[IDEMPOTENCY] Skipping stitch task creation - already exists with ID {existing_stitch_task_id}")
 
+        # === JOIN CLIPS ORCHESTRATOR (for AI-generated transitions) ===
+        # If stitch_config is provided, create a join_clips_orchestrator that will generate
+        # smooth AI transitions between segments using VACE, instead of simple crossfades
+        stitch_config = orchestrator_payload.get("stitch_config")
+        join_orchestrator_created = False
+
+        # Check if join orchestrator already exists (idempotency)
+        existing_join_orchestrators = existing_child_tasks.get('join_clips_orchestrator', [])
+        join_orchestrator_already_exists = len(existing_join_orchestrators) > 0
+
+        if stitch_config and not join_orchestrator_already_exists:
+            dprint(f"[JOIN_STITCH] stitch_config detected - creating join_clips_orchestrator for AI transitions")
+            dprint(f"[JOIN_STITCH] stitch_config: {stitch_config}")
+
+            # Collect ALL segment task IDs for multi-dependency
+            all_segment_task_ids = [actual_segment_db_id_by_index[i] for i in range(num_segments)]
+            dprint(f"[JOIN_STITCH] All segment task IDs ({len(all_segment_task_ids)}): {all_segment_task_ids}")
+
+            # Build join_clips_orchestrator payload from stitch_config
+            join_orchestrator_payload = {
+                "orchestrator_task_id_ref": orchestrator_task_id_str,
+                "orchestrator_run_id": run_id,
+                "project_id": orchestrator_project_id,
+                "parent_generation_id": (
+                    task_params_from_db.get("parent_generation_id")
+                    or orchestrator_payload.get("parent_generation_id")
+                ),
+
+                # Dynamic clip_list will be built from segment outputs when join orchestrator runs
+                "segment_task_ids": all_segment_task_ids,
+
+                # Join settings from stitch_config
+                "context_frame_count": stitch_config.get("context_frame_count", 12),
+                "gap_frame_count": stitch_config.get("gap_frame_count", 19),
+                "replace_mode": stitch_config.get("replace_mode", True),
+                "prompt": stitch_config.get("prompt", "smooth seamless transition"),
+                "negative_prompt": stitch_config.get("negative_prompt", ""),
+                "enhance_prompt": stitch_config.get("enhance_prompt", False),
+                "keep_bridging_images": stitch_config.get("keep_bridging_images", False),
+
+                # Model and generation settings
+                "model": stitch_config.get("model", orchestrator_payload.get("model", "wan_2_2_vace_lightning_baseline_2_2_2")),
+                "phase_config": stitch_config.get("phase_config", orchestrator_payload.get("phase_config")),
+                "additional_loras": stitch_config.get("loras", []),
+                "seed": -1 if stitch_config.get("random_seed", True) else stitch_config.get("seed", orchestrator_payload.get("seed_base", -1)),
+
+                # Resolution/FPS from original orchestrator
+                "resolution": orchestrator_payload.get("parsed_resolution_wh"),
+                "fps": orchestrator_payload.get("fps_helpers", 16),
+                "use_input_video_resolution": True,
+                "use_input_video_fps": True,
+
+                # Audio (if provided)
+                "audio_url": orchestrator_payload.get("audio_url"),
+
+                # Output configuration
+                "output_base_dir": str(current_run_output_dir.resolve()),
+
+                # Use parallel join pattern (better quality)
+                "use_parallel_joins": True,
+            }
+
+            # Create join_clips_orchestrator with multi-dependency on ALL segments
+            dprint(f"[JOIN_STITCH] Creating join_clips_orchestrator dependent on {len(all_segment_task_ids)} segments")
+            join_orchestrator_task_id = db_ops.add_task_to_db(
+                task_payload={"orchestrator_details": join_orchestrator_payload},
+                task_type_str="join_clips_orchestrator",
+                dependant_on=all_segment_task_ids  # Multi-dependency: all segments must complete
+            )
+            dprint(f"[JOIN_STITCH] ✅ join_clips_orchestrator created: {join_orchestrator_task_id}")
+            travel_logger.info(f"Created join_clips_orchestrator {join_orchestrator_task_id} for AI-stitching {num_segments} segments", task_id=orchestrator_task_id_str)
+            join_orchestrator_created = True
+
+        elif stitch_config and join_orchestrator_already_exists:
+            dprint(f"[IDEMPOTENCY] Skipping join_clips_orchestrator creation - already exists")
+
         generation_success = True
         if segments_created > 0:
-            output_message_for_orchestrator_db = f"Successfully enqueued {segments_created} new segment tasks for run {run_id}. (Total expected: {num_segments} segments)"
+            extra_info = ""
+            if join_orchestrator_created:
+                extra_info = " + join_clips_orchestrator for AI transitions"
+            elif stitch_created:
+                extra_info = " + travel_stitch task"
+            output_message_for_orchestrator_db = f"Successfully enqueued {segments_created} new segment tasks for run {run_id}{extra_info}. (Total expected: {num_segments} segments)"
         else:
             output_message_for_orchestrator_db = f"[IDEMPOTENT] All child tasks already exist for run {run_id}. No new tasks created."
         travel_logger.info(output_message_for_orchestrator_db, task_id=orchestrator_task_id_str)

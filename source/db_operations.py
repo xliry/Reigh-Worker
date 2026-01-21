@@ -1415,11 +1415,12 @@ def get_task_dependency(task_id: str, max_retries: int = 3, retry_delay: float =
 def get_orchestrator_child_tasks(orchestrator_task_id: str) -> dict:
     """
     Gets all child tasks for a given orchestrator task ID from Supabase.
-    Returns dict with 'segments', 'stitch', and 'join_clips_segment' lists.
+    Returns dict with task type lists: 'segments', 'stitch', 'join_clips_segment',
+    'join_clips_orchestrator', 'join_final_stitch'.
     """
     if not SUPABASE_CLIENT:
         print(f"[ERROR] Supabase client not initialized. Cannot get orchestrator child tasks for {orchestrator_task_id}")
-        return {'segments': [], 'stitch': [], 'join_clips_segment': []}
+        return {'segments': [], 'stitch': [], 'join_clips_segment': [], 'join_clips_orchestrator': [], 'join_final_stitch': []}
 
     try:
         # Query for child tasks referencing this orchestrator
@@ -1432,6 +1433,8 @@ def get_orchestrator_child_tasks(orchestrator_task_id: str) -> dict:
         segments = []
         stitch = []
         join_clips_segment = []
+        join_clips_orchestrator = []
+        join_final_stitch = []
 
         if response.data:
             for task in response.data:
@@ -1449,8 +1452,18 @@ def get_orchestrator_child_tasks(orchestrator_task_id: str) -> dict:
                     stitch.append(task_data)
                 elif task['task_type'] == 'join_clips_segment':
                     join_clips_segment.append(task_data)
+                elif task['task_type'] == 'join_clips_orchestrator':
+                    join_clips_orchestrator.append(task_data)
+                elif task['task_type'] == 'join_final_stitch':
+                    join_final_stitch.append(task_data)
 
-        return {'segments': segments, 'stitch': stitch, 'join_clips_segment': join_clips_segment}
+        return {
+            'segments': segments,
+            'stitch': stitch,
+            'join_clips_segment': join_clips_segment,
+            'join_clips_orchestrator': join_clips_orchestrator,
+            'join_final_stitch': join_final_stitch,
+        }
 
     except Exception as e:
         dprint(f"Error querying Supabase for orchestrator child tasks {orchestrator_task_id}: {e}")
