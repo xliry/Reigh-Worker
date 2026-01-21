@@ -1014,8 +1014,8 @@ def _handle_join_clips_task(
 
                         # Upload and get final location
                         final_db_location = upload_and_get_final_output_location(
-                            local_output_path=transition_output_path,
-                            task_id=task_id,
+                            local_file_path=transition_output_path,
+                            supabase_object_name=task_id,  # unused but required for compatibility
                             initial_db_location=initial_db_location,
                             dprint=dprint
                         )
@@ -1610,8 +1610,8 @@ def _handle_join_final_stitch(
 
         # Upload
         final_db_location = upload_and_get_final_output_location(
-            local_output_path=final_output_path,
-            task_id=task_id,
+            local_file_path=final_output_path,
+            supabase_object_name=task_id,  # unused but required for compatibility
             initial_db_location=initial_db_location,
             dprint=dprint
         )
