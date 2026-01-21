@@ -72,7 +72,7 @@ def _log_thumbnail(msg: str, level: str = "debug", task_id: str = None):
 # Format: "[EDGE_FAIL:{function_name}:{error_type}]" for easy grep/parsing
 EDGE_FAIL_PREFIX = "[EDGE_FAIL"  # Used by debug.py to detect edge failures
 
-RETRYABLE_STATUS_CODES = {502, 503, 504}
+RETRYABLE_STATUS_CODES = {500, 502, 503, 504}  # 500 included for transient edge function crashes (CDN issues, cold starts)
 
 def _call_edge_function_with_retry(
     edge_url: str,
