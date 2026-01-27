@@ -1440,7 +1440,6 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     # Build lists for single-image batch processing
                     single_images = []
                     single_base_prompts = []
-                    single_frame_counts = []
                     single_indices = []
 
                     for idx in segments_needing_vlm:
@@ -1460,8 +1459,6 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                         single_images.append(image_path)
                         segment_base_prompt = expanded_base_prompts[idx] if expanded_base_prompts[idx] and expanded_base_prompts[idx].strip() else base_prompt
                         single_base_prompts.append(segment_base_prompt)
-                        segment_frames = expanded_segment_frames[idx] if idx < len(expanded_segment_frames) else None
-                        single_frame_counts.append(segment_frames)
                         single_indices.append(idx)
                     
                     # Generate prompts for single images
@@ -1471,8 +1468,6 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                         enhanced_prompts = generate_single_image_prompts_batch(
                             image_paths=single_images,
                             base_prompts=single_base_prompts,
-                            num_frames_list=single_frame_counts,
-                            fps=fps_helpers,
                             device=vlm_device,
                             dprint=dprint
                         )
@@ -1490,7 +1485,6 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     # Multi-image mode: build lists of image pairs for transitions
                     image_pairs = []
                     base_prompts_for_batch = []
-                    segment_frame_counts = []  # Frame count for each segment
                     segment_indices = []  # Track which segment each pair belongs to
 
                     for idx in segments_needing_vlm:
@@ -1548,9 +1542,6 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                             # Use segment-specific base_prompt if available, otherwise use overall base_prompt
                             segment_base_prompt = expanded_base_prompts[idx] if expanded_base_prompts[idx] and expanded_base_prompts[idx].strip() else base_prompt
                             base_prompts_for_batch.append(segment_base_prompt)
-                            # Get frame count for this segment for duration calculation
-                            segment_frames = expanded_segment_frames[idx] if idx < len(expanded_segment_frames) else None
-                            segment_frame_counts.append(segment_frames)
                             segment_indices.append(idx)
                         else:
                             dprint(f"[VLM_BATCH] Segment {idx}: Skipping - image indices out of bounds (start={start_anchor_idx}, end={end_anchor_idx}, available={len(input_images_resolved)})")
@@ -1566,15 +1557,10 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                         prompt_preview = base_prompt[:50] if base_prompt else 'EMPTY'
                         dprint(f"[VLM_IMAGE_DEBUG]   Pair {i} (segment {seg_idx}): {start_name} → {end_name}")
                         dprint(f"[VLM_IMAGE_DEBUG]     Base prompt: '{prompt_preview}...'")
-                    
-                    # Get FPS from orchestrator payload (default to 16)
-                    fps_helpers = orchestrator_payload.get("fps_helpers", 16)
 
                     enhanced_prompts = generate_transition_prompts_batch(
                         image_pairs=image_pairs,
                         base_prompts=base_prompts_for_batch,
-                        num_frames_list=segment_frame_counts,
-                        fps=fps_helpers,
                         device=vlm_device,
                         dprint=dprint,
                         task_id=orchestrator_task_id_str,

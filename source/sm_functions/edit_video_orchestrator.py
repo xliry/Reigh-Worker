@@ -618,10 +618,8 @@ def _handle_edit_video_orchestrator_task(
                 )
                 
                 vlm_enhanced_prompts = _generate_vlm_prompts_for_joins(
-                    image_pairs=image_pairs,
+                    image_quads=image_pairs,
                     base_prompt=base_prompt,
-                    gap_frame_count=gap_frame_count,
-                    fps=fps,
                     vlm_device=vlm_device,
                     dprint=dprint
                 )

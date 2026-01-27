@@ -218,8 +218,6 @@ def generate_transition_prompt(
     start_image_path: str,
     end_image_path: str,
     base_prompt: Optional[str] = None,
-    num_frames: Optional[int] = None,
-    fps: int = 16,
     device: str = "cuda",
     dprint=print
 ) -> str:
@@ -232,8 +230,6 @@ def generate_transition_prompt(
         start_image_path: Path to the starting image
         end_image_path: Path to the ending image
         base_prompt: Optional base prompt to append after VLM-generated description
-        num_frames: Number of frames in the video segment (for duration calculation)
-        fps: Frames per second (default: 16)
         device: Device to run the model on ('cuda' or 'cpu')
         dprint: Print function for logging
 
@@ -295,15 +291,9 @@ def generate_transition_prompt(
         # Craft the query prompt with examples
         base_prompt_text = base_prompt if base_prompt and base_prompt.strip() else "the objects/people inside the scene move excitingly and things transform or shift with the camera"
 
-        # Add duration info if available
-        duration_text = ""
-        if num_frames and fps:
-            duration_seconds = num_frames / fps
-            duration_text = f" This transition occurs over approximately {duration_seconds:.1f} seconds ({num_frames} frames at {fps} FPS)."
-
         query = f"""You are viewing two images side by side: the left image shows the starting frame, and the right image shows the ending frame of a video sequence.
 
-{duration_text} Your goal is to create a THREE-SENTENCE prompt that describes the MOTION and CHANGES in this transition based on the user's description: '{base_prompt_text}'
+Your goal is to create a THREE-SENTENCE prompt that describes the MOTION and CHANGES in this transition based on the user's description: '{base_prompt_text}'
 
 FOCUS ON MOTION: Describe what MOVES, what CHANGES, and HOW things transition between these frames. Everything should be described in terms of motion and transformation, not static states.
 
@@ -356,8 +346,6 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
 def generate_transition_prompts_batch(
     image_pairs: List[Tuple[str, str]],
     base_prompts: List[Optional[str]],
-    num_frames_list: Optional[List[int]] = None,
-    fps: int = 16,
     device: str = "cuda",
     dprint=print,
     task_id: Optional[str] = None,
@@ -372,8 +360,6 @@ def generate_transition_prompts_batch(
     Args:
         image_pairs: List of (start_image_path, end_image_path) tuples
         base_prompts: List of base prompts to append (one per pair, can be None)
-        num_frames_list: List of frame counts for each segment (for duration calculation)
-        fps: Frames per second (default: 16)
         device: Device to run the model on ('cuda' or 'cpu')
         dprint: Print function for logging
         task_id: Optional task ID for organizing debug image uploads
@@ -563,16 +549,9 @@ def generate_transition_prompts_batch(
                 # Craft query with base_prompt context
                 base_prompt_text = base_prompt if base_prompt and base_prompt.strip() else "the objects/people inside the scene move excitingly and things transform or shift with the camera"
 
-                # Add duration info if available
-                duration_text = ""
-                if num_frames_list and i < len(num_frames_list) and num_frames_list[i]:
-                    num_frames = num_frames_list[i]
-                    duration_seconds = num_frames / fps
-                    duration_text = f" This transition occurs over approximately {duration_seconds:.1f} seconds ({num_frames} frames at {fps} FPS)."
-
                 query = f"""You are viewing two images side by side: the LEFT image (with GREEN border) shows the STARTING frame, and the RIGHT image (with RED border) shows the ENDING frame of a video sequence.
 
-{duration_text} Your goal is to create a THREE-SENTENCE prompt that describes the MOTION and CHANGES in this transition based on the user's description: '{base_prompt_text}'
+Your goal is to create a THREE-SENTENCE prompt that describes the MOTION and CHANGES in this transition based on the user's description: '{base_prompt_text}'
 
 FOCUS ON MOTION: Describe what MOVES, what CHANGES, and HOW things transition between these frames. Everything should be described in terms of motion and transformation, not static states.
 
@@ -595,7 +574,7 @@ Examples of MOTION-FOCUSED descriptions:
 Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_prompt_text}'"""
 
                 # [VLM_QUERY_DEBUG] Log the key parts of the query being sent to VLM
-                dprint(f"[VLM_QUERY_DEBUG] Pair {i}: base_prompt_text='{base_prompt_text[:100]}...' duration_text='{duration_text}'")
+                dprint(f"[VLM_QUERY_DEBUG] Pair {i}: base_prompt_text='{base_prompt_text[:100]}...'")
 
                 # Run inference
                 result = extender.extend_with_img(
@@ -662,8 +641,6 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
 def generate_single_image_prompt(
     image_path: str,
     base_prompt: Optional[str] = None,
-    num_frames: Optional[int] = None,
-    fps: int = 16,
     device: str = "cuda",
     dprint=print
 ) -> str:
@@ -676,8 +653,6 @@ def generate_single_image_prompt(
     Args:
         image_path: Path to the image
         base_prompt: Optional base prompt to incorporate
-        num_frames: Number of frames in the video segment (for duration calculation)
-        fps: Frames per second (default: 16)
         device: Device to run the model on ('cuda' or 'cpu')
         dprint: Print function for logging
 
@@ -714,15 +689,9 @@ def generate_single_image_prompt(
         # Craft the query prompt
         base_prompt_text = base_prompt if base_prompt and base_prompt.strip() else "the objects/people inside the scene move excitingly and things transform or shift with the camera"
 
-        # Add duration info if available
-        duration_text = ""
-        if num_frames and fps:
-            duration_seconds = num_frames / fps
-            duration_text = f" The video will be approximately {duration_seconds:.1f} seconds long ({num_frames} frames at {fps} FPS)."
-
         query = f"""You are viewing a single image that will be the starting frame of a video sequence.
 
-{duration_text} Your goal is to create a THREE-SENTENCE prompt that describes the image and suggests NATURAL MOTION based on the user's description: '{base_prompt_text}'
+Your goal is to create a THREE-SENTENCE prompt that describes the image and suggests NATURAL MOTION based on the user's description: '{base_prompt_text}'
 
 FOCUS ON MOTION: Describe what's in the image and how things could naturally move, animate, or change. Everything should suggest dynamic motion from this starting point.
 
@@ -788,8 +757,6 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
 def generate_single_image_prompts_batch(
     image_paths: List[str],
     base_prompts: List[Optional[str]],
-    num_frames_list: Optional[List[int]] = None,
-    fps: int = 16,
     device: str = "cuda",
     dprint=print
 ) -> List[str]:
@@ -802,8 +769,6 @@ def generate_single_image_prompts_batch(
     Args:
         image_paths: List of image paths
         base_prompts: List of base prompts (one per image, can be None)
-        num_frames_list: List of frame counts for each segment (for duration calculation)
-        fps: Frames per second (default: 16)
         device: Device to run the model on ('cuda' or 'cpu')
         dprint: Print function for logging
 
@@ -861,16 +826,9 @@ def generate_single_image_prompts_batch(
                 # Craft query with base_prompt context
                 base_prompt_text = base_prompt if base_prompt and base_prompt.strip() else "the objects/people inside the scene move excitingly and things transform or shift with the camera"
 
-                # Add duration info if available
-                duration_text = ""
-                if num_frames_list and i < len(num_frames_list) and num_frames_list[i]:
-                    num_frames = num_frames_list[i]
-                    duration_seconds = num_frames / fps
-                    duration_text = f" The video will be approximately {duration_seconds:.1f} seconds long ({num_frames} frames at {fps} FPS)."
-
                 query = f"""You are viewing a single image that will be the starting frame of a video sequence.
 
-{duration_text} Your goal is to create a THREE-SENTENCE prompt that describes the image and suggests NATURAL MOTION based on the user's description: '{base_prompt_text}'
+Your goal is to create a THREE-SENTENCE prompt that describes the image and suggests NATURAL MOTION based on the user's description: '{base_prompt_text}'
 
 FOCUS ON MOTION: Describe what's in the image and how things could naturally move, animate, or change. Everything should suggest dynamic motion from this starting point.
 

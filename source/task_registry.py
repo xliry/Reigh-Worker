@@ -152,10 +152,17 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
         # Model name: segment > orchestrator (required)
         model_name = segment_params.get("model_name") or orchestrator_details["model_name"]
         
-        # Prompts: individual > segment > default
-        prompt_for_wgp = ensure_valid_prompt(
-            _get_param("base_prompt", individual_params, segment_params, default=" ")
-        )
+        # Prompts: enhanced_prompt preferred > base_prompt fallback
+        # Frontend may provide both: enhanced_prompt (AI-enhanced) and base_prompt (user's original)
+        enhanced_prompt = _get_param("enhanced_prompt", individual_params, segment_params, default=None)
+        base_prompt = _get_param("base_prompt", individual_params, segment_params, default=" ")
+        
+        # Use enhanced_prompt if present and non-empty, otherwise base_prompt
+        effective_prompt = enhanced_prompt if enhanced_prompt and enhanced_prompt.strip() else base_prompt
+        prompt_for_wgp = ensure_valid_prompt(effective_prompt)
+        
+        if enhanced_prompt and enhanced_prompt.strip():
+            dprint_func(f"[PROMPT] Task {task_id}: Using enhanced_prompt")
         negative_prompt_for_wgp = ensure_valid_negative_prompt(
             _get_param("negative_prompt", individual_params, segment_params, default=" ")
         )
