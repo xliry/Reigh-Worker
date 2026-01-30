@@ -94,17 +94,9 @@ FATAL_ERROR_PATTERNS = {
 # than permanently marked as Failed.
 
 RETRYABLE_ERROR_PATTERNS = {
-    "oom": {
-        "patterns": [
-            r"CUDA out of memory",
-            r"torch\.OutOfMemoryError",
-            r"Tried to allocate.*MiB",
-            r"CUDA error: out of memory",
-            r"CUDA error: too many resources requested",
-        ],
-        "max_attempts": 3,
-        "description": "GPU memory exhaustion - may succeed on different worker or after memory clears",
-    },
+    # NOTE: OOM is intentionally NOT retryable. Retrying on the same worker with the
+    # same parameters will always fail again. If you have workers with different VRAM
+    # capacities, manually requeue the task or implement worker exclusion logic.
     "generation_no_output": {
         "patterns": [
             r"No output generated",
