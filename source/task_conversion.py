@@ -246,34 +246,8 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
     
     model = db_task_params.get("model")
     if not model:
-        task_type_to_model = {
-            "generate_video": "t2v",
-            "vace": "vace_14B_cocktail_2_2",
-            "vace_21": "vace_14B",
-            "vace_22": "vace_14B_cocktail_2_2",
-            "wan_2_2_t2i": "t2v_2_2",
-            "flux": "flux",
-            "t2v": "t2v",
-            "t2v_22": "t2v_2_2",
-            "i2v": "i2v_14B",
-            "i2v_22": "i2v_2_2",
-            "hunyuan": "hunyuan",
-            "ltxv": "ltxv_13B",
-            "join_clips_segment": "wan_2_2_vace_lightning_baseline_2_2_2",
-            "inpaint_frames": "wan_2_2_vace_lightning_baseline_2_2_2",
-            "qwen_image_edit": "qwen_image_edit_20B",
-            "qwen_image_hires": "qwen_image_edit_20B",
-            "qwen_image_style": "qwen_image_edit_20B",
-            "image_inpaint": "qwen_image_edit_20B",
-            "annotated_image_edit": "qwen_image_edit_20B",
-            # Text-to-image tasks
-            "qwen_image": "qwen_image_edit_20B",
-            "qwen_image_2512": "qwen_image_2512_20B",
-            "z_image_turbo": "z_image",
-            # Image-to-image tasks
-            "z_image_turbo_i2i": "z_image_img2img"
-        }
-        model = task_type_to_model.get(task_type, "t2v")
+        from source.task_types import get_default_model
+        model = get_default_model(task_type)
     
     generation_params = {}
     

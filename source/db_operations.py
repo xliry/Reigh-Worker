@@ -1,4 +1,15 @@
-# source/sm_functions/db_operations.py
+# source/db_operations.py
+"""
+Database operations for Supabase-backed task management.
+
+This module provides functions for:
+- Task lifecycle management (claim, update status, complete, fail)
+- Heartbeat and worker registration
+- Inter-task communication (dependencies, orchestrator coordination)
+- Output path management and uploads
+
+All operations communicate with a Supabase PostgreSQL database via Edge Functions.
+"""
 import os
 import sys
 import json
@@ -582,7 +593,7 @@ def _orchestrator_has_incomplete_children(orchestrator_task_id: str) -> bool:
         payload = {"orchestrator_task_id": orchestrator_task_id}
 
         try:
-            resp = requests.post(edge_url, json=payload, headers=headers, timeout=30)
+            resp = httpx.post(edge_url, json=payload, headers=headers, timeout=30)
             if resp.status_code == 200:
                 data = resp.json()
                 tasks = data.get("tasks", [])
@@ -618,12 +629,12 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
         print("[ERROR] Supabase client not initialized. Cannot get task.")
         return None
     
-    # Use provided worker_id or use the specific GPU worker ID
+    # Worker ID is required
     if not worker_id:
-        worker_id = "gpu-20250723_221138-afa8403b"
-        dprint(f"DEBUG: No worker_id provided, using default GPU worker: {worker_id}")
-    else:
-        dprint(f"DEBUG: Using provided worker_id: {worker_id}")
+        print("[ERROR] No worker_id provided to get_oldest_queued_task_supabase")
+        return None
+
+    dprint(f"DEBUG: Using worker_id: {worker_id}")
     
     # ═══════════════════════════════════════════════════════════════════════════
     # RECOVERY (but don't starve queued tasks)

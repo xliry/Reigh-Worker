@@ -1351,44 +1351,6 @@ class HeadlessTaskQueue:
             "system_memory_used": 0,
             "model_memory_usage": 0
         }
-    
-    def _save_queue_state(self):
-        """Save current queue state for persistence."""
-        # TODO: Integrate with wgp.py's save_queue_action()
-        # This would allow restoring queue state on restart
-        pass
-    
-    def _load_queue_state(self):
-        """Load saved queue state on startup."""
-        # TODO: Integrate with wgp.py's load_queue_action()
-        pass
-
-
-class HeadlessAPI:
-    """
-    Simple HTTP API for submitting tasks to the queue.
-    
-    This provides a REST interface for external systems to submit
-    generation tasks without needing to interact with the queue directly.
-    """
-    
-    def __init__(self, queue: HeadlessTaskQueue, port: int = 8080):
-        self.queue = queue
-        self.port = port
-        self.app = None  # TODO: Add Flask/FastAPI app
-    
-    def start(self):
-        """Start the HTTP API server."""
-        # TODO: Implement REST API with endpoints:
-        # POST /generate - Submit new task
-        # GET /status/{task_id} - Get task status  
-        # GET /queue - Get queue status
-        # DELETE /tasks/{task_id} - Cancel task
-        pass
-    
-    def stop(self):
-        """Stop the HTTP API server."""
-        pass
 
 
 def create_sample_task(task_id: str, model: str, prompt: str, **params) -> GenerationTask:
@@ -1405,45 +1367,39 @@ def main():
     """Main entry point for the headless service."""
     parser = argparse.ArgumentParser(description="WanGP Headless Task Queue")
     parser.add_argument("--wan-dir", required=True, help="Path to WanGP directory")
-    parser.add_argument("--port", type=int, default=8080, help="API server port")
     parser.add_argument("--workers", type=int, default=1, help="Number of worker threads")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    
+
     args = parser.parse_args()
-    
+
     if args.debug:
         logging.getLogger().setLevel(logging.DEBUG)
-    
+
     # Initialize queue
     task_queue = HeadlessTaskQueue(args.wan_dir, max_workers=args.workers)
-    
-    # Initialize API (optional)
-    api = HeadlessAPI(task_queue, port=args.port)
-    
+
     # Setup signal handlers
     def signal_handler(signum, frame):
         print("\nReceived shutdown signal, stopping...")
         task_queue.stop()
-        api.stop()
         sys.exit(0)
-    
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
-    
+
     try:
         # Start services
         task_queue.start()
-        # api.start()  # TODO: Uncomment when API is implemented
-        
-        print(f"🚀 Headless queue started on port {args.port}")
-        print(f"📁 WanGP directory: {args.wan_dir}")
-        print(f"👥 Workers: {args.workers}")
+
+        print(f"Headless queue started")
+        print(f"WanGP directory: {args.wan_dir}")
+        print(f"Workers: {args.workers}")
         print("Press Ctrl+C to stop...")
-        
+
         # Example: Submit some test tasks
         if args.debug:
-            print("\n🧪 Submitting test tasks...")
-            
+            print("\nSubmitting test tasks...")
+
             # Test T2V task
             t2v_task = create_sample_task(
                 "test-t2v-1",
@@ -1454,29 +1410,18 @@ def main():
                 seed=42
             )
             task_queue.submit_task(t2v_task)
-            
-            # Test VACE task (would need actual video file)
-            # vace_task = create_sample_task(
-            #     "test-vace-1", 
-            #     "vace_14B",
-            #     "a cyberpunk dancer in neon lights",
-            #     video_guide="inputs/dance.mp4",
-            #     video_prompt_type="VP",
-            #     resolution="1280x720"
-            # )
-            # task_queue.submit_task(vace_task)
-        
+
         # Keep running until shutdown
         while task_queue.running:
             time.sleep(1.0)
-            
+
             # Print periodic status
             if args.debug:
                 status = task_queue.get_queue_status()
-                print(f"📊 Queue: {status.pending_tasks} pending, "
+                print(f"Queue: {status.pending_tasks} pending, "
                       f"{status.completed_tasks} completed, "
                       f"{status.failed_tasks} failed")
-    
+
     except KeyboardInterrupt:
         print("\nShutdown requested by user")
     except Exception as e:
@@ -1484,7 +1429,6 @@ def main():
         raise
     finally:
         task_queue.stop()
-        api.stop()
 
 
 if __name__ == "__main__":

@@ -28,40 +28,32 @@ from source.specialized_handlers import (
 )
 from source.comfy_handler import handle_comfy_task
 from source.task_engine_router import route_task, COMFY_TASK_TYPES
-from source.sm_functions import travel_between_images as tbi
-from source.sm_functions import magic_edit as me
-from source.sm_functions.join_clips import _handle_join_clips_task, _handle_join_final_stitch
-from source.sm_functions.join_clips_orchestrator import _handle_join_clips_orchestrator_task
-from source.sm_functions.edit_video_orchestrator import _handle_edit_video_orchestrator_task
-from source.sm_functions.inpaint_frames import _handle_inpaint_frames_task
-from source.sm_functions.create_visualization import _handle_create_visualization_task
+from source.task_handlers import travel_between_images as tbi
+from source.task_handlers import magic_edit as me
+from source.task_handlers.join_clips import _handle_join_clips_task, _handle_join_final_stitch
+from source.task_handlers.join_clips_orchestrator import _handle_join_clips_orchestrator_task
+from source.task_handlers.edit_video_orchestrator import _handle_edit_video_orchestrator_task
+from source.task_handlers.inpaint_frames import _handle_inpaint_frames_task
+from source.task_handlers.create_visualization import _handle_create_visualization_task
 from source.travel_segment_processor import TravelSegmentProcessor, TravelSegmentContext
 from source.common_utils import (
-    parse_resolution as sm_parse_resolution,
+    parse_resolution,
     snap_resolution_to_model_grid,
     ensure_valid_prompt,
     ensure_valid_negative_prompt,
-    download_image_if_url as sm_download_image_if_url
+    download_image_if_url
 )
 from source.video_utils import (
-    prepare_vace_ref_for_segment as sm_prepare_vace_ref_for_segment,
-    create_guide_video_for_travel_segment as sm_create_guide_video_for_travel_segment,
-    extract_last_frame_as_image as sm_extract_last_frame_as_image,
-    get_video_frame_count_and_fps as sm_get_video_frame_count_and_fps
+    prepare_vace_ref_for_segment,
+    create_guide_video_for_travel_segment,
+    extract_last_frame_as_image,
+    get_video_frame_count_and_fps
 )
 from source import db_operations as db_ops
 from headless_model_management import HeadlessTaskQueue, GenerationTask
 
-# Define Direct Queue Task Types
-DIRECT_QUEUE_TASK_TYPES = {
-    "wan_2_2_t2i", "vace", "vace_21", "vace_22", "flux", "t2v", "t2v_22",
-    "i2v", "i2v_22", "hunyuan", "ltxv", "generate_video",
-    "qwen_image_edit", "qwen_image_hires", "qwen_image_style", "image_inpaint", "annotated_image_edit",
-    # Text-to-image tasks (no input image required)
-    "qwen_image", "qwen_image_2512", "z_image_turbo",
-    # Image-to-image tasks
-    "z_image_turbo_i2i"
-}
+# Import centralized task type definitions
+from source.task_types import DIRECT_QUEUE_TASK_TYPES
 
 
 _MISSING = object()
@@ -109,7 +101,7 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
     log_ram_usage("Segment via queue - start", task_id=task_id)
     
     try:
-        from source.sm_functions.travel_between_images import _handle_travel_chaining_after_wgp
+        from source.task_handlers.travel_between_images import _handle_travel_chaining_after_wgp
         
         segment_params = task_params_dict
         orchestrator_task_id_ref = segment_params.get("orchestrator_task_id_ref")
@@ -169,7 +161,7 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
         
         # Resolution: segment > orchestrator
         parsed_res_wh_str = segment_params.get("parsed_resolution_wh") or orchestrator_details["parsed_resolution_wh"]
-        parsed_res_raw = sm_parse_resolution(parsed_res_wh_str)
+        parsed_res_raw = parse_resolution(parsed_res_wh_str)
         if parsed_res_raw is None:
             return False, f"Travel segment {task_id}: Invalid resolution format {parsed_res_wh_str}"
         parsed_res_wh = snap_resolution_to_model_grid(parsed_res_raw)
@@ -258,12 +250,12 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                 predecessor_video_path = predecessor_output_url
                 if predecessor_output_url.startswith("http"):
                     try:
-                        from source.common_utils import download_file as sm_download_file
+                        from source.common_utils import download_file as download_file
                         local_filename = Path(predecessor_output_url).name
                         local_download_path = segment_processing_dir / f"svi_predecessor_{segment_idx:02d}_{local_filename}"
                         
                         if not local_download_path.exists():
-                            sm_download_file(predecessor_output_url, segment_processing_dir, local_download_path.name)
+                            download_file(predecessor_output_url, segment_processing_dir, local_download_path.name)
                             dprint_func(f"[SVI_CHAINING] Seg {segment_idx}: Downloaded predecessor video to {local_download_path}")
                         else:
                             dprint_func(f"[SVI_CHAINING] Seg {segment_idx}: Predecessor video already exists at {local_download_path}")
@@ -279,12 +271,12 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                 # last frames ourselves, we limit what gets prepended.
                 if predecessor_video_path and Path(predecessor_video_path).exists():
                     from source.video_utils import (
-                        get_video_frame_count_and_fps as sm_get_video_frame_count_and_fps,
-                        extract_frame_range_to_video as sm_extract_frame_range_to_video
+                        get_video_frame_count_and_fps as get_video_frame_count_and_fps,
+                        extract_frame_range_to_video as extract_frame_range_to_video
                     )
                     
                     # Get predecessor video frame count
-                    pred_frames, pred_fps = sm_get_video_frame_count_and_fps(predecessor_video_path)
+                    pred_frames, pred_fps = get_video_frame_count_and_fps(predecessor_video_path)
                     if pred_frames and pred_frames > 0:
                         # IMPORTANT GROUND TRUTH:
                         # Wan2GP SVI continuation uses the last (5 + overlap_size) frames of prefix_video
@@ -313,7 +305,7 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                         trimmed_prefix_filename = f"svi_prefix_{segment_idx:02d}_last{frames_needed}frames_{uuid.uuid4().hex[:6]}.mp4"
                         trimmed_prefix_path = segment_processing_dir / trimmed_prefix_filename
                         
-                        trimmed_result = sm_extract_frame_range_to_video(
+                        trimmed_result = extract_frame_range_to_video(
                             source_video=predecessor_video_path,
                             output_path=str(trimmed_prefix_path),
                             start_frame=start_frame,
@@ -324,7 +316,7 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                         
                         if trimmed_result and Path(trimmed_result).exists():
                             # Verify extracted prefix video
-                            prefix_frames, prefix_fps = sm_get_video_frame_count_and_fps(trimmed_result)
+                            prefix_frames, prefix_fps = get_video_frame_count_and_fps(trimmed_result)
                             svi_predecessor_video_for_source = str(trimmed_result)
                             dprint_func(f"[SVI_GROUND_TRUTH] Seg {segment_idx}: ✅ Extracted prefix video: {prefix_frames} frames (expected: {frames_needed})")
                             dprint_func(f"[SVI_GROUND_TRUTH] Seg {segment_idx}: Prefix video path: {trimmed_result}")
@@ -341,7 +333,7 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                         dprint_func(f"[SVI_CHAINING] Seg {segment_idx}: Could not get predecessor frame count, using full video")
                     
                     # Still extract last frame for image_refs (anchor reference)
-                    start_ref_path = sm_extract_last_frame_as_image(
+                    start_ref_path = extract_last_frame_as_image(
                         predecessor_video_path, 
                         segment_processing_dir, 
                         task_id
@@ -392,7 +384,7 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
             if segment_idx == 0:
                 continued_video_path = full_orchestrator_payload.get("continue_from_video_resolved_path")
                 if continued_video_path and Path(continued_video_path).exists():
-                    start_ref_path = sm_extract_last_frame_as_image(continued_video_path, segment_processing_dir, task_id)
+                    start_ref_path = extract_last_frame_as_image(continued_video_path, segment_processing_dir, task_id)
                 if orchestrator_images:
                     end_ref_path = orchestrator_images[0]
             else:
@@ -409,10 +401,10 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
         dprint_func(f"[IMG_RESOLVE] Task {task_id}: start_ref_path after logic: {start_ref_path}")
         
         if start_ref_path:
-            start_ref_path = sm_download_image_if_url(start_ref_path, segment_processing_dir, task_id, debug_mode=debug_enabled)
+            start_ref_path = download_image_if_url(start_ref_path, segment_processing_dir, task_id, debug_mode=debug_enabled)
             dprint_func(f"[IMG_RESOLVE] Task {task_id}: start_ref_path AFTER DOWNLOAD: {start_ref_path}")
         if end_ref_path:
-            end_ref_path = sm_download_image_if_url(end_ref_path, segment_processing_dir, task_id, debug_mode=debug_enabled)
+            end_ref_path = download_image_if_url(end_ref_path, segment_processing_dir, task_id, debug_mode=debug_enabled)
 
         guide_video_path = None
         mask_video_path_for_wgp = None
@@ -728,7 +720,7 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                 
                 # GROUND TRUTH LOG: What WGP will receive
                 try:
-                    wgp_input_frames, wgp_input_fps = sm_get_video_frame_count_and_fps(video_source_path)
+                    wgp_input_frames, wgp_input_fps = get_video_frame_count_and_fps(video_source_path)
                     dprint_func(f"[SVI_GROUND_TRUTH] Task {task_id}: ========== WGP INPUT ANALYSIS ==========")
                     dprint_func(f"[SVI_GROUND_TRUTH] Task {task_id}: video_source: {video_source_path}")
                     dprint_func(f"[SVI_GROUND_TRUTH] Task {task_id}: video_source frames: {wgp_input_frames}")
@@ -797,7 +789,7 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                     dprint_func(f"[SVI_PAYLOAD] Task {task_id}: Set {key}={segment_params[key]}")
             
             # Merge SVI LoRAs with existing LoRAs using direct arrays (not additional_loras dict)
-            from source.sm_functions.travel_between_images import get_svi_lora_arrays
+            from source.task_handlers.travel_between_images import get_svi_lora_arrays
             
             # Get existing LoRA arrays from generation_params
             existing_urls = generation_params.get("activated_loras", [])
@@ -840,7 +832,7 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
         dprint_func(f"[UNI3C_DEBUG] Task {task_id}: structure_config.is_uni3c={structure_config.is_uni3c}, use_uni3c={use_uni3c}")
 
         if use_uni3c:
-            from source.common_utils import download_file as sm_download_file
+            from source.common_utils import download_file as download_file
 
             # Get guide video from config (may have been set by processor)
             uni3c_guide = structure_config.guidance_video_url
@@ -862,7 +854,7 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                     local_filename = Path(uni3c_guide).name or "uni3c_guide_video.mp4"
                     local_download_path = segment_processing_dir / f"uni3c_{local_filename}"
                     if not local_download_path.exists():
-                        sm_download_file(uni3c_guide, segment_processing_dir, local_download_path.name)
+                        download_file(uni3c_guide, segment_processing_dir, local_download_path.name)
                         dprint_func(f"[UNI3C] Task {task_id}: Downloaded guide video to {local_download_path}")
                     else:
                         dprint_func(f"[UNI3C] Task {task_id}: Guide video already exists at {local_download_path}")

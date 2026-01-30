@@ -34,12 +34,12 @@ from ..common_utils import (
     upload_intermediate_file_to_storage
 )
 from ..video_utils import (
-    extract_frames_from_video as sm_extract_frames_from_video,
+    extract_frames_from_video,
     extract_frame_range_to_video,
     ensure_video_fps,
     standardize_video_aspect_ratio,
-    stitch_videos_with_crossfade as sm_stitch_videos_with_crossfade,
-    create_video_from_frames_list as sm_create_video_from_frames_list,
+    stitch_videos_with_crossfade,
+    create_video_from_frames_list,
     get_video_frame_count_ffprobe,
     get_video_fps_ffprobe,
     add_audio_to_video,
@@ -545,13 +545,13 @@ def _handle_join_clips_task(
 
         try:
             # Extract all frames from both videos
-            start_all_frames = sm_extract_frames_from_video(str(starting_video), dprint_func=dprint)
+            start_all_frames = extract_frames_from_video(str(starting_video), dprint_func=dprint)
             if not start_all_frames or len(start_all_frames) < context_frame_count:
                 error_msg = f"Failed to extract {context_frame_count} frames from starting video"
                 dprint(f"[JOIN_CLIPS_ERROR] Task {task_id}: {error_msg}")
                 return False, error_msg
 
-            end_all_frames = sm_extract_frames_from_video(str(ending_video), dprint_func=dprint)
+            end_all_frames = extract_frames_from_video(str(ending_video), dprint_func=dprint)
             if not end_all_frames or len(end_all_frames) < context_frame_count:
                 error_msg = f"Failed to extract {context_frame_count} frames from ending video"
                 dprint(f"[JOIN_CLIPS_ERROR] Task {task_id}: {error_msg}")
@@ -717,7 +717,7 @@ def _handle_join_clips_task(
                     # Create vid2vid source video file
                     vid2vid_source_video_path = join_clips_dir / f"vid2vid_source_{task_id}.mp4"
                     try:
-                        created_vid2vid_video = sm_create_video_from_frames_list(
+                        created_vid2vid_video = create_video_from_frames_list(
                             vid2vid_frames,
                             vid2vid_source_video_path,
                             target_fps,
@@ -775,13 +775,20 @@ def _handle_join_clips_task(
 
         # Determine resolution: check use_input_video_resolution flag first, then explicit resolution param
         use_input_video_resolution = task_params_from_db.get("use_input_video_resolution", False)
-        
+        resolution_override = task_params_from_db.get("resolution")  # May be None or a list
+
+        # DEBUG: Log the raw values to diagnose resolution issues
+        dprint(f"[JOIN_CLIPS] Task {task_id}: Resolution decision debug:")
+        dprint(f"[JOIN_CLIPS]   detected_res_wh (from frames): {detected_res_wh}")
+        dprint(f"[JOIN_CLIPS]   use_input_video_resolution raw value: {use_input_video_resolution!r} (type: {type(use_input_video_resolution).__name__})")
+        dprint(f"[JOIN_CLIPS]   resolution_override raw value: {resolution_override!r}")
+
         if use_input_video_resolution:
             parsed_res_wh = detected_res_wh
             dprint(f"[JOIN_CLIPS] Task {task_id}: use_input_video_resolution=True, using detected resolution: {parsed_res_wh}")
-        elif "resolution" in task_params_from_db:
-            resolution_list = task_params_from_db["resolution"]
-            parsed_res_wh = (resolution_list[0], resolution_list[1])
+        elif resolution_override is not None:
+            # resolution_override should be a list [width, height]
+            parsed_res_wh = (resolution_override[0], resolution_override[1])
             dprint(f"[JOIN_CLIPS] Task {task_id}: Using resolution override: {parsed_res_wh}")
         else:
             parsed_res_wh = detected_res_wh
@@ -1081,7 +1088,7 @@ def _handle_join_clips_task(
                         # to detect if VACE shifted the alignment
                         try:
                             import numpy as np
-                            transition_frames = sm_extract_frames_from_video(str(transition_output_path), dprint_func=dprint)
+                            transition_frames = extract_frames_from_video(str(transition_output_path), dprint_func=dprint)
                             if transition_frames and start_all_frames and end_all_frames:
                                 dprint(f"[OFFSET_DETECT_SOURCE] Task {task_id}: Verifying transition alignment at source...")
 
@@ -1323,7 +1330,7 @@ def _handle_join_clips_task(
                         blend_frame_counts = [blend_frames, blend_frames]
 
                         try:
-                            created_video = sm_stitch_videos_with_crossfade(
+                            created_video = stitch_videos_with_crossfade(
                                 video_paths=video_paths,
                                 blend_frame_counts=blend_frame_counts,
                                 output_path=final_output_path,
@@ -1755,8 +1762,8 @@ def _handle_join_final_stitch(
             if ctx1 > 0 and i < len(clip_paths):
                 # Compare: clip[i]'s last ctx1 frames (before gap) vs transition's first ctx1 frames
                 try:
-                    clip_frames_list = sm_extract_frames_from_video(str(clip_paths[i]), dprint_func=dprint)
-                    trans_frames_list = sm_extract_frames_from_video(str(transition_paths[i]), dprint_func=dprint)
+                    clip_frames_list = extract_frames_from_video(str(clip_paths[i]), dprint_func=dprint)
+                    trans_frames_list = extract_frames_from_video(str(transition_paths[i]), dprint_func=dprint)
 
                     if clip_frames_list and trans_frames_list:
                         # Clip context: last (gap_from_clip1 + ctx1) to last gap_from_clip1 frames
@@ -1839,8 +1846,8 @@ def _handle_join_final_stitch(
             if ctx2 > 0 and i + 1 < len(clip_paths):
                 # Compare: transition's last ctx2 frames vs clip[i+1]'s first ctx2 frames (after gap)
                 try:
-                    next_clip_frames = sm_extract_frames_from_video(str(clip_paths[i + 1]), dprint_func=dprint)
-                    trans_frames_list = sm_extract_frames_from_video(str(transition_paths[i]), dprint_func=dprint)
+                    next_clip_frames = extract_frames_from_video(str(clip_paths[i + 1]), dprint_func=dprint)
+                    trans_frames_list = extract_frames_from_video(str(transition_paths[i]), dprint_func=dprint)
 
                     if next_clip_frames and trans_frames_list:
                         gap2 = trans.get("gap_from_clip2", gap_from_clip2)
@@ -2064,7 +2071,7 @@ def _handle_join_final_stitch(
         )
 
         try:
-            created_video = sm_stitch_videos_with_crossfade(
+            created_video = stitch_videos_with_crossfade(
                 video_paths=stitch_videos,
                 blend_frame_counts=stitch_blends,
                 output_path=final_output_path,

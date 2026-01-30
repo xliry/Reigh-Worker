@@ -28,13 +28,13 @@ try:
     from Wan2GP.postprocessing.rife.inference import temporal_interpolation
     from source.common_utils import (
         dprint, get_video_frame_count_and_fps,
-        download_image_if_url, sm_get_unique_target_path,
-        _apply_strength_to_image as sm_apply_strength_to_image,
-        create_color_frame as sm_create_color_frame,
-        image_to_frame as sm_image_to_frame,
-        _adjust_frame_brightness as sm_adjust_frame_brightness,
-        get_easing_function as sm_get_easing_function,
-        wait_for_file_stable as sm_wait_for_file_stable
+        download_image_if_url, get_unique_target_path,
+        apply_strength_to_image,
+        create_color_frame,
+        image_to_frame,
+        adjust_frame_brightness,
+        get_easing_function,
+        wait_for_file_stable
     )
     from source.params.structure_guidance import StructureGuidanceConfig
 except ImportError as e_import:
@@ -782,7 +782,7 @@ def create_video_from_frames_list(
     # If we exhausted all retries without returning, return None
     return None
 
-def _apply_saturation_to_video_ffmpeg(
+def apply_saturation_to_video_ffmpeg(
     input_video_path: str | Path,
     output_video_path: str | Path,
     saturation_level: float,
@@ -1150,7 +1150,7 @@ def prepare_vace_ref_for_segment(
     processed_vace_base_name = f"vace_ref_s{segment_idx_for_naming}_{vace_ref_type}_str{strength_to_apply:.2f}"
     original_suffix = local_original_image_path.suffix if local_original_image_path.suffix else ".png"
     
-    output_path_for_processed_vace = sm_get_unique_target_path(segment_processing_dir, processed_vace_base_name, original_suffix)
+    output_path_for_processed_vace = get_unique_target_path(segment_processing_dir, processed_vace_base_name, original_suffix)
 
     effective_target_resolution_wh = None
     if target_resolution_wh:
@@ -1158,7 +1158,7 @@ def prepare_vace_ref_for_segment(
         if effective_target_resolution_wh != target_resolution_wh:
             dprint(f"Task {task_id_for_logging}, Segment {segment_processing_dir.name}: Adjusted VACE ref target resolution from {target_resolution_wh} to {effective_target_resolution_wh}")
 
-    final_processed_path = sm_apply_strength_to_image(
+    final_processed_path = apply_strength_to_image(
         image_path_input=local_original_image_path, 
         strength=strength_to_apply,
         output_path=output_path_for_processed_vace,
@@ -1245,12 +1245,12 @@ def create_guide_video_for_travel_segment(
         if predefined_output_path:
             actual_guide_video_path = predefined_output_path
         else:
-            actual_guide_video_path = sm_get_unique_target_path(output_target_dir, guide_video_base_name, ".mp4")
+            actual_guide_video_path = get_unique_target_path(output_target_dir, guide_video_base_name, ".mp4")
         
         # Extract debug mode from orchestrator payload or segment params
         debug_mode = segment_params.get("debug_mode_enabled", full_orchestrator_payload.get("debug_mode_enabled", False))
         
-        gray_frame_bgr = sm_create_color_frame(parsed_res_wh, (128, 128, 128))
+        gray_frame_bgr = create_color_frame(parsed_res_wh, (128, 128, 128))
 
         # Hardcoded fade parameters (duration_factor=0.0 means no fading)
         fi_low, fi_high, fi_curve, fi_factor = 0.0, 1.0, "ease_in_out", 0.0
@@ -1266,7 +1266,7 @@ def create_guide_video_for_travel_segment(
             return None
 
         dprint(f"Task {task_id_for_logging}: Interpolating guide video with {total_frames_for_segment} frames...")
-        frames_for_guide_list = [sm_create_color_frame(parsed_res_wh, (128,128,128)).copy() for _ in range(total_frames_for_segment)]
+        frames_for_guide_list = [create_color_frame(parsed_res_wh, (128,128,128)).copy() for _ in range(total_frames_for_segment)]
 
         # Check for consolidated keyframe positions (frame consolidation optimization)
         consolidated_keyframe_positions = segment_params.get("consolidated_keyframe_positions")
@@ -1281,7 +1281,7 @@ def create_guide_video_for_travel_segment(
                 for img_idx, frame_pos in enumerate(consolidated_keyframe_positions):
                     if img_idx < len(input_images_resolved_for_guide) and frame_pos <= total_frames_for_segment - 1:
                         img_path = input_images_resolved_for_guide[img_idx]
-                        keyframe_np = sm_image_to_frame(img_path, parsed_res_wh, task_id_for_logging=task_id_for_logging, image_download_dir=segment_image_download_dir, debug_mode=debug_mode)
+                        keyframe_np = image_to_frame(img_path, parsed_res_wh, task_id_for_logging=task_id_for_logging, image_download_dir=segment_image_download_dir, debug_mode=debug_mode)
                         if keyframe_np is not None:
                             frames_for_guide_list[frame_pos] = keyframe_np.copy()
                             # Mark keyframe as guided
@@ -1328,7 +1328,7 @@ def create_guide_video_for_travel_segment(
                         image_idx = start_image_idx + i
                         if image_idx >= 0 and image_idx < len(input_images_resolved_for_guide) and frame_pos <= total_frames_for_segment - 1:
                             img_path = input_images_resolved_for_guide[image_idx]
-                            keyframe_np = sm_image_to_frame(img_path, parsed_res_wh, task_id_for_logging=task_id_for_logging, image_download_dir=segment_image_download_dir, debug_mode=debug_mode)
+                            keyframe_np = image_to_frame(img_path, parsed_res_wh, task_id_for_logging=task_id_for_logging, image_download_dir=segment_image_download_dir, debug_mode=debug_mode)
                             if keyframe_np is not None:
                                 frames_for_guide_list[frame_pos] = keyframe_np.copy()
                                 # Mark keyframe as guided
@@ -1373,7 +1373,7 @@ def create_guide_video_for_travel_segment(
             else:
                  raise ValueError(f"Seg {segment_idx_for_logging}: End anchor index {end_anchor_image_index} out of bounds for input images list ({len(input_images_resolved_for_guide)} images available).")
             
-            end_anchor_frame_np = sm_image_to_frame(end_anchor_img_path_str, parsed_res_wh, task_id_for_logging=task_id_for_logging, image_download_dir=segment_image_download_dir, debug_mode=debug_mode)
+            end_anchor_frame_np = image_to_frame(end_anchor_img_path_str, parsed_res_wh, task_id_for_logging=task_id_for_logging, image_download_dir=segment_image_download_dir, debug_mode=debug_mode)
             if end_anchor_frame_np is None: raise ValueError(f"Failed to load end anchor image: {end_anchor_img_path_str}")
         else:
             # For single image journeys, we don't need an end anchor - only set the first frame
@@ -1384,7 +1384,7 @@ def create_guide_video_for_travel_segment(
 
         if is_first_segment_from_scratch:
             start_anchor_img_path_str = input_images_resolved_for_guide[0]
-            start_anchor_frame_np = sm_image_to_frame(start_anchor_img_path_str, parsed_res_wh, task_id_for_logging=task_id_for_logging, image_download_dir=segment_image_download_dir, debug_mode=debug_mode)
+            start_anchor_frame_np = image_to_frame(start_anchor_img_path_str, parsed_res_wh, task_id_for_logging=task_id_for_logging, image_download_dir=segment_image_download_dir, debug_mode=debug_mode)
             if start_anchor_frame_np is None: raise ValueError(f"Failed to load start anchor: {start_anchor_img_path_str}")
             if frames_for_guide_list:
                 frames_for_guide_list[0] = start_anchor_frame_np.copy()
@@ -1399,7 +1399,7 @@ def create_guide_video_for_travel_segment(
                 avail_frames_start_fade = max(0, pot_max_idx_start_fade)
                 num_start_fade_steps = int(avail_frames_start_fade * fo_factor)
                 if num_start_fade_steps > 0:
-                    easing_fn_out = sm_get_easing_function(fo_curve)
+                    easing_fn_out = get_easing_function(fo_curve)
                     for k_fo in range(num_start_fade_steps):
                         idx_in_guide = 1 + k_fo
                         if idx_in_guide >= total_frames_for_segment: break
@@ -1415,7 +1415,7 @@ def create_guide_video_for_travel_segment(
                 num_end_fade_steps = int(avail_frames_end_fade * fi_factor)
                 if num_end_fade_steps > 0:
                     actual_end_fade_start_idx = max(min_idx_end_fade, max_idx_end_fade - num_end_fade_steps + 1)
-                    easing_fn_in = sm_get_easing_function(fi_curve)
+                    easing_fn_in = get_easing_function(fi_curve)
                     for k_fi in range(num_end_fade_steps):
                         idx_in_guide = actual_end_fade_start_idx + k_fi
                         if idx_in_guide >= total_frames_for_segment: break
@@ -1443,7 +1443,7 @@ def create_guide_video_for_travel_segment(
 
             # Wait for file to be stable before reading (important for recently encoded videos)
             dprint(f"GuideBuilder: Waiting for previous video file to stabilize...")
-            file_stable = sm_wait_for_file_stable(path_to_previous_segment_video_output_for_guide, checks=3, interval=1.0, dprint=dprint)
+            file_stable = wait_for_file_stable(path_to_previous_segment_video_output_for_guide, checks=3, interval=1.0, dprint=dprint)
             if not file_stable:
                 dprint(f"GuideBuilder: WARNING - File stability check failed, proceeding anyway")
 
@@ -1549,7 +1549,7 @@ def create_guide_video_for_travel_segment(
             if frames_read_for_overlap > 0:
                 if fo_factor > 0.0:
                     num_init_fade_steps = min(int(frames_read_for_overlap * fo_factor), frames_read_for_overlap)
-                    easing_fn_fo_ol = sm_get_easing_function(fo_curve)
+                    easing_fn_fo_ol = get_easing_function(fo_curve)
                     for k_fo_ol in range(num_init_fade_steps):
                         alpha_l = 1.0 - ((k_fo_ol + 1) / float(num_init_fade_steps))
                         eff_s = fo_low + (fo_high - fo_low) * easing_fn_fo_ol(alpha_l)
@@ -1561,21 +1561,21 @@ def create_guide_video_for_travel_segment(
                             gb=cv2.cvtColor(g,cv2.COLOR_GRAY2BGR)
                             frames_for_guide_list[k_fo_ol]=cv2.addWeighted(frames_for_guide_list[k_fo_ol],1-desat_factor,gb,desat_factor,0)
                         if bright_adj!=0:
-                            frames_for_guide_list[k_fo_ol]=sm_adjust_frame_brightness(frames_for_guide_list[k_fo_ol],bright_adj)
+                            frames_for_guide_list[k_fo_ol]=adjust_frame_brightness(frames_for_guide_list[k_fo_ol],bright_adj)
                 else:
                     eff_s=np.clip(fo_high+strength_adj,0,1)
                     if abs(eff_s-1.0)>1e-5 or desat_factor>0 or bright_adj!=0:
                         for k_s_ol in range(frames_read_for_overlap):
                             base_f=frames_for_guide_list[k_s_ol];frames_for_guide_list[k_s_ol]=cv2.addWeighted(gray_frame_bgr.astype(np.float32),1-eff_s,base_f.astype(np.float32),eff_s,0).astype(np.uint8)
                             if desat_factor>0: g=cv2.cvtColor(frames_for_guide_list[k_s_ol],cv2.COLOR_BGR2GRAY);gb=cv2.cvtColor(g,cv2.COLOR_GRAY2BGR);frames_for_guide_list[k_s_ol]=cv2.addWeighted(frames_for_guide_list[k_s_ol],1-desat_factor,gb,desat_factor,0)
-                            if bright_adj!=0: frames_for_guide_list[k_s_ol]=sm_adjust_frame_brightness(frames_for_guide_list[k_s_ol],bright_adj)
+                            if bright_adj!=0: frames_for_guide_list[k_s_ol]=adjust_frame_brightness(frames_for_guide_list[k_s_ol],bright_adj)
             
             if not single_image_journey:
                 min_idx_efs = frames_read_for_overlap; max_idx_efs = total_frames_for_segment - num_end_anchor_duplicates - 1
                 avail_f_efs = max(0, max_idx_efs - min_idx_efs + 1); num_efs_steps = int(avail_f_efs * fi_factor)
                 if num_efs_steps > 0:
                     actual_efs_start_idx = max(min_idx_efs, max_idx_efs - num_efs_steps + 1)
-                    easing_fn_in_s = sm_get_easing_function(fi_curve)
+                    easing_fn_in_s = get_easing_function(fi_curve)
                     for k_fi_s in range(num_efs_steps):
                         idx = actual_efs_start_idx+k_fi_s
                         if idx >= total_frames_for_segment: break

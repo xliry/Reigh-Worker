@@ -114,45 +114,69 @@ DB → worker.py → HeadlessTaskQueue → WanOrchestrator → wgp.py
 ```
 <repo-root>
 ├── add_task.py
-├── debug.py                 # Unified task/worker/system debug CLI
+├── debug.py                     # Unified task/worker/system debug CLI
 ├── generate_test_tasks.py
-├── worker.py
-├── test_supabase_worker.py    # Test script for Supabase functionality
+├── worker.py                    # Main worker entry point
+├── headless_model_management.py # HeadlessTaskQueue, GPU management
+├── headless_wgp.py              # WanOrchestrator, WGP wrapper
+├── test_supabase_worker.py      # Test script for Supabase functionality
 ├── SUPABASE_SETUP.md            # Setup guide for Supabase mode
+├── docs/
+│   └── ARCHITECTURE.md          # High-level system architecture documentation
 ├── source/
 │   ├── __init__.py
-│   ├── common_utils.py
-│   ├── db_operations.py
-│   ├── specialized_handlers.py
-│   ├── video_utils.py
-
-│   └── sm_functions/
+│   ├── task_types.py            # Centralized task type definitions (single source of truth)
+│   ├── task_registry.py         # Task routing and dispatch
+│   ├── task_conversion.py       # DB params → GenerationTask conversion
+│   ├── lora_paths.py            # Centralized LoRA directory configuration
+│   ├── param_aliases.py         # Parameter name normalization
+│   ├── platform_utils.py        # Platform-specific utilities (ALSA suppression, etc.)
+│   ├── wgp_patches.py           # WGP monkeypatches for headless mode
+│   ├── common_utils.py          # Shared utilities (download, resize, etc.)
+│   ├── db_operations.py         # Supabase/SQLite database operations
+│   ├── video_utils.py           # Video processing (FFmpeg wrappers)
+│   ├── logging_utils.py         # Structured logging with safe repr
+│   ├── lora_utils.py            # LoRA downloading and resolution
+│   ├── specialized_handlers.py  # OpenPose, RIFE, frame extraction handlers
+│   ├── travel_segment_processor.py  # Guide/mask video creation for VACE
+│   ├── params/                  # Typed parameter dataclasses
+│   │   ├── lora.py              # LoRAConfig, LoRAEntry
+│   │   ├── vace.py              # VACEConfig
+│   │   ├── generation.py        # GenerationConfig
+│   │   └── task.py              # TaskConfig (combines all param groups)
+│   ├── model_handlers/          # Model-specific handlers
+│   │   └── qwen_handler.py      # Qwen image editing handler
+│   └── task_handlers/           # Orchestrator implementations
 │       ├── __init__.py
-│       ├── travel_between_images.py
-│       ├── join_clips.py
+│       ├── travel_between_images.py  # Multi-segment travel video generation
+│       ├── join_clips.py             # AI-generated video transitions
 │       ├── join_clips_orchestrator.py
-├── tasks/                      # Task specifications
-│   └── HEADLESS_SUPABASE_TASK.md  # Supabase implementation spec
+│       ├── edit_video_orchestrator.py
+│       ├── magic_edit.py             # Replicate API integration
+│       ├── inpaint_frames.py         # VACE-based frame regeneration
+│       └── create_visualization.py
+├── tasks/                       # Task specifications
+│   └── HEADLESS_SUPABASE_TASK.md
 ├── supabase/
 │   └── functions/
-│       ├── _shared/                # Shared authentication utilities for edge functions
-│       ├── claim-next-task/        # Edge Function: claims next task (service-role → any, user → own only)
-│       ├── complete-task/          # Edge Function: uploads file & marks task complete
-│       ├── create-task/            # Edge Function: queues task from client
-│       ├── generate-upload-url/    # Edge Function: generates presigned URLs for file uploads
-│       ├── get-predecessor-output/ # Edge Function: gets task dependency and its output in single call
-│       ├── get-completed-segments/ # Edge Function: fetches completed travel_segment outputs for a run_id, bypassing RLS
-│       ├── task-counts/            # Edge Function: returns task counts and worker statistics
-│       └── update-task-status/     # Edge Function: updates task status (use claim_next_task for proper claiming)
+│       ├── _shared/                # Shared authentication utilities
+│       ├── claim-next-task/        # Claims next task
+│       ├── complete-task/          # Uploads file & marks complete
+│       ├── create-task/            # Queues task from client
+│       ├── generate-upload-url/    # Generates presigned URLs
+│       ├── get-predecessor-output/ # Gets task dependency output
+│       ├── get-completed-segments/ # Fetches completed travel segments
+│       ├── task-counts/            # Task counts and worker stats
+│       └── update-task-status/     # Updates task status
 ├── scripts/
-│   └── gpu_diag.sh              # Prints GPU/NVML diagnostics (helpful when nvidia-smi breaks in containers)
+│   └── gpu_diag.sh              # GPU/NVML diagnostics
 ├── logs/               # runtime logs (git-ignored)
 ├── outputs/            # generated videos/images (git-ignored)
 ├── samples/            # example inputs for docs & tests
 ├── tests/              # pytest suite
 ├── test_outputs/       # artefacts written by tests (git-ignored)
-├── Wan2GP/  ← third-party video-generation engine (keep high-level only)
-└── STRUCTURE.md  (this file)
+├── Wan2GP/             # Third-party video-generation engine (submodule)
+└── STRUCTURE.md        # (this file)
 ```
 
 ## Top-level scripts
@@ -165,6 +189,7 @@ DB → worker.py → HeadlessTaskQueue → WanOrchestrator → wgp.py
 ## Documentation
 
 * **STRUCTURE.md** (this file) – Project structure and component overview
+* **docs/ARCHITECTURE.md** – High-level system architecture with component diagrams and data flow
 * **AI_AGENT_MAINTENANCE_GUIDE.md** – Guide for AI agents working on this codebase
 * **WORKER_LOGGING_IMPLEMENTATION.md** – Centralized logging implementation guide for GPU workers integrating with orchestrator logging system
 * **HEADLESS_SYSTEM_ARCHITECTURE.md** – Detailed component interactions and system architecture
@@ -227,11 +252,30 @@ The system now uses a modern queue-based architecture for video generation:
 
 This is the main application package.
 
-* **common_utils.py** – Reusable helpers (file downloads, ffmpeg helpers, MediaPipe keypoint interpolation, debug utilities, etc.). Includes generalized Supabase upload functions (`prepare_output_path_with_upload`, `upload_and_get_final_output_location`) used by all task types. Contains `extract_orchestrator_parameters()` function that provides centralized parameter extraction from `orchestrator_details` across all task types.
+### Centralized Definitions (Single Source of Truth)
+
+* **task_types.py** – Centralized task type definitions. Contains `WGP_TASK_TYPES`, `DIRECT_QUEUE_TASK_TYPES`, `TASK_TYPE_TO_MODEL` mappings, and helper functions like `get_default_model()`. Import from here instead of duplicating definitions.
+* **lora_paths.py** – Centralized LoRA directory configuration. Provides `get_lora_search_dirs()` and `get_lora_dir_for_model()` for consistent LoRA path resolution across the codebase.
+* **param_aliases.py** – Parameter name normalization. Maps alternative parameter names (e.g., `colour_match_videos` → `color_match_videos`, `steps` → `num_inference_steps`) to canonical names for backwards compatibility.
+
+### Core Modules
+
+* **task_registry.py** – Task routing and dispatch. Contains `TaskRegistry.dispatch()` which routes tasks to appropriate handlers, and `_handle_travel_segment_via_queue()` for travel segment processing.
+* **task_conversion.py** – Converts database task parameters to `GenerationTask` objects for the queue system.
 * **db_operations.py** – Handles all database interactions for both SQLite and Supabase. Includes Supabase client initialization, Edge Function integration, and automatic backend selection based on `DB_TYPE`.
-* **specialized_handlers.py** – Contains handlers for specific, non-standard tasks like OpenPose generation and RIFE interpolation. Uses Supabase-compatible upload functions for all outputs.
+* **common_utils.py** – Reusable helpers (file downloads, ffmpeg helpers, MediaPipe keypoint interpolation, debug utilities, etc.). Includes generalized Supabase upload functions (`prepare_output_path_with_upload`, `upload_and_get_final_output_location`) used by all task types. Contains `extract_orchestrator_parameters()` function that provides centralized parameter extraction from `orchestrator_details` across all task types.
+
+### Platform & Integration
+
+* **platform_utils.py** – Platform-specific utilities for headless operation. Contains `suppress_alsa_errors()` to silence ALSA messages on Linux and `setup_headless_environment()` for environment setup.
+* **wgp_patches.py** – WGP monkeypatches for headless mode. Contains `apply_all_wgp_patches()` which applies Qwen model routing, LoRA directory patches, and other fixes needed for headless operation without modifying upstream Wan2GP.
+* **logging_utils.py** – Structured logging with safe representation utilities. Provides `safe_repr()`, `safe_dict_repr()` to prevent logging hangs on large objects, plus `LogBuffer` and `CustomLogInterceptor` for orchestrator log integration.
+
+### Video & Generation
+
 * **video_utils.py** – Provides utilities for video manipulation like cross-fading, frame extraction, and color matching.
-* **travel_segment_processor.py** – Shared processor for travel segment handling. Contains unified logic for guide video creation, mask video creation, and video_prompt_type construction used by both `travel_between_images.py` and `worker.py`.
+* **travel_segment_processor.py** – Shared processor for travel segment handling. Contains unified logic for guide video creation, mask video creation, and video_prompt_type construction used by both `travel_between_images.py` and `task_registry.py`.
+* **specialized_handlers.py** – Contains handlers for specific, non-standard tasks like OpenPose generation and RIFE interpolation. Uses Supabase-compatible upload functions for all outputs.
 * **lora_utils.py** – LoRA download and cleanup utilities. Contains `_download_lora_from_url()` for HuggingFace/direct URL downloads with collision-safe filenames, and `cleanup_legacy_lora_collisions()` for removing old generic LoRA files.
 * **params/** – Typed parameter dataclasses (`TaskConfig`, `LoRAConfig`, `VACEConfig`, etc.) for clean parameter flow. Provides canonical representations that parse once at system boundary and convert to WGP format only at the final WGP call. `LoRAConfig` handles URL detection, deduplication, download tracking, and WGP format conversion.
   * **base.py** – `ParamGroup` ABC with precedence utilities and `flatten_params()` helper.
@@ -244,7 +288,7 @@ This is the main application package.
   * **qwen_handler.py** – Qwen-specific preprocessing and parameter transformation. Handles 5 Qwen task types: `qwen_image_edit`, `qwen_image_hires`, `image_inpaint`, `annotated_image_edit`, `qwen_image_style`. Manages resolution capping, composite image creation (green masks), system prompt selection, LoRA coordination, and two-pass hires fix configuration.
 
 
-### source/sm_functions/ sub-package
+### source/task_handlers/ sub-package
 
 Task-specific wrappers around the bulky upstream logic. These are imported by `worker.py` (and potentially by notebooks/unit tests) without dragging in the interactive Gradio UI shipped with Wan2GP. All task handlers use generalized Supabase upload functions for consistent output handling.
 
@@ -324,7 +368,7 @@ The submodule is updated periodically using standard git submodule commands. Onl
 1. **Task injection** – A CLI, API, or test script calls `add_task.py`, which inserts a new row into the `tasks` table (SQLite or Supabase).  Payload JSON is stored in `params`, `status` is set to `Queued`.
 2. **Worker pickup** – `worker.py` runs in a loop, atomically updates a `Queued` row to `In Progress`, and inspects `task_type` to choose the correct handler.
 3. **Handler execution**
-   * Standard tasks live in `source/sm_functions/…` (see table below).
+   * Standard tasks live in `source/task_handlers/…` (see table below).
    * Special one-offs (OpenPose, RIFE, etc.) live in `specialized_handlers.py`.
    * Handlers may queue **sub-tasks** (e.g. travel → N segments + 1 stitch) by inserting new rows with `dependant_on` set, forming a DAG.
 4. **Video generation** – Every handler now uses the **HeadlessTaskQueue** system which provides efficient model management, memory optimization, and queue-based processing through **headless_model_management.py** and **headless_wgp.py**.
@@ -336,14 +380,14 @@ The submodule is updated periodically using standard git submodule commands. Onl
 
 | Task type / sub-task | Entrypoint function | File |
 |----------------------|---------------------|------|
-| Travel orchestrator  | `_handle_travel_orchestrator_task` | `sm_functions/travel_between_images.py` |
+| Travel orchestrator  | `_handle_travel_orchestrator_task` | `task_handlers/travel_between_images.py` |
 | Travel segment       | `_handle_travel_segment_via_queue` | `source/task_registry.py` |
 | Travel stitch        | `_handle_travel_stitch_task`       | " " |
 | Single image video   | Direct queue integration (wan_2_2_t2i) | `worker.py` (direct routing)   |
-| Join clips           | `_handle_join_clips_task`          | `sm_functions/join_clips.py` |
-| Join clips orchestrator | `_handle_join_clips_orchestrator_task` | `sm_functions/join_clips_orchestrator.py` |
-| Edit video orchestrator | `_handle_edit_video_orchestrator_task` | `sm_functions/edit_video_orchestrator.py` |
-| Magic edit           | `_handle_magic_edit_task`          | `sm_functions/magic_edit.py` |
+| Join clips           | `_handle_join_clips_task`          | `task_handlers/join_clips.py` |
+| Join clips orchestrator | `_handle_join_clips_orchestrator_task` | `task_handlers/join_clips_orchestrator.py` |
+| Edit video orchestrator | `_handle_edit_video_orchestrator_task` | `task_handlers/edit_video_orchestrator.py` |
+| Magic edit           | `_handle_magic_edit_task`          | `task_handlers/magic_edit.py` |
 | OpenPose mask video  | `handle_openpose_task`             | `specialized_handlers.py` |
 | RIFE interpolation   | `handle_rife_task`                 | `specialized_handlers.py` |
 
@@ -432,7 +476,7 @@ For parameters that affect how the orchestrator creates segments:
 
 | Location | File | What to Update |
 |----------|------|----------------|
-| **Orchestrator handler** | `source/sm_functions/travel_between_images.py` | Read from `orchestrator_payload.get("param_name")` in `_handle_travel_orchestrator_task()` |
+| **Orchestrator handler** | `source/task_handlers/travel_between_images.py` | Read from `orchestrator_payload.get("param_name")` in `_handle_travel_orchestrator_task()` |
 | **Segment payload creation** | Same file, around line 1740 | Add to `segment_payload = { "param_name": value, ... }` |
 
 ### 2. Segment-Level Parameters
@@ -491,7 +535,7 @@ For parameters used across multiple task types:
 | File | Purpose |
 |------|---------|
 | `source/task_registry.py` | **PRIMARY**: Travel segment processing, param → generation_params conversion |
-| `source/sm_functions/travel_between_images.py` | Orchestrator logic, segment payload creation |
+| `source/task_handlers/travel_between_images.py` | Orchestrator logic, segment payload creation |
 | `source/common_utils.py` | Centralized param extraction (`extract_orchestrator_parameters`) |
 | `source/params/*.py` | Typed param dataclasses (LoRA, VACE, Generation configs) |
 | `Wan2GP/defaults/*.json` | Model-specific default values |

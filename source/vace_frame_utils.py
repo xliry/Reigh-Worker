@@ -20,10 +20,10 @@ import numpy as np
 
 from .common_utils import (
     create_mask_video_from_inactive_indices,
-    create_color_frame as sm_create_color_frame
+    create_color_frame
 )
 from .video_utils import (
-    create_video_from_frames_list as sm_create_video_from_frames_list
+    create_video_from_frames_list
 )
 
 
@@ -154,7 +154,7 @@ def create_guide_and_mask_for_generation(
     dprint(f"[VACE_UTILS] Task {task_id}: Building guide video...")
 
     guide_frames = []
-    gray_frame = sm_create_color_frame(resolution_wh, (128, 128, 128))
+    gray_frame = create_color_frame(resolution_wh, (128, 128, 128))
     
     # Track indices of inserted frames (absolute index in guide_frames)
     inserted_frame_indices = []
@@ -247,7 +247,7 @@ def create_guide_and_mask_for_generation(
 
     # Create guide video
     try:
-        created_guide_video = sm_create_video_from_frames_list(
+        created_guide_video = create_video_from_frames_list(
             guide_frames,
             guide_video_path,
             fps,

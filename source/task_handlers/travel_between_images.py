@@ -27,35 +27,34 @@ try:
 except ImportError:
     _COLOR_MATCH_DEPS_AVAILABLE = False
 
-# --- SM_RESTRUCTURE: Import moved/new utilities ---
 from .. import db_operations as db_ops
 from ..common_utils import (
-    generate_unique_task_id as sm_generate_unique_task_id,
-    get_video_frame_count_and_fps as sm_get_video_frame_count_and_fps,
-    sm_get_unique_target_path,
-    create_color_frame as sm_create_color_frame,
-    parse_resolution as sm_parse_resolution,    
-    download_image_if_url as sm_download_image_if_url,
+    generate_unique_task_id,
+    get_video_frame_count_and_fps,
+    get_unique_target_path,
+    create_color_frame,
+    parse_resolution,
+    download_image_if_url,
     prepare_output_path,
     prepare_output_path_with_upload,
     upload_and_get_final_output_location,
     snap_resolution_to_model_grid,
     ensure_valid_prompt,
     ensure_valid_negative_prompt,
-    wait_for_file_stable as sm_wait_for_file_stable,
+    wait_for_file_stable,
 )
 from ..params.structure_guidance import StructureGuidanceConfig
 from ..video_utils import (
-    extract_frames_from_video as sm_extract_frames_from_video,
-    create_video_from_frames_list as sm_create_video_from_frames_list,
-    cross_fade_overlap_frames as sm_cross_fade_overlap_frames,
-    _apply_saturation_to_video_ffmpeg as sm_apply_saturation_to_video_ffmpeg,
+    extract_frames_from_video,
+    create_video_from_frames_list,
+    cross_fade_overlap_frames,
+    apply_saturation_to_video_ffmpeg,
     apply_brightness_to_video_frames,
-    prepare_vace_ref_for_segment as sm_prepare_vace_ref_for_segment,
-    create_guide_video_for_travel_segment as sm_create_guide_video_for_travel_segment,
-    apply_color_matching_to_video as sm_apply_color_matching_to_video,
-    extract_last_frame_as_image as sm_extract_last_frame_as_image,
-    overlay_start_end_images_above_video as sm_overlay_start_end_images_above_video,
+    prepare_vace_ref_for_segment,
+    create_guide_video_for_travel_segment,
+    apply_color_matching_to_video,
+    extract_last_frame_as_image,
+    overlay_start_end_images_above_video,
 )
 # Legacy wgp_utils import removed - now using task_queue system exclusively
 
@@ -176,7 +175,7 @@ def debug_video_analysis(video_path: str | Path, label: str, task_id: str = "unk
             travel_logger.debug(f"{label}: FILE MISSING - {video_path}", task_id=task_id)
             return {"exists": False, "path": str(video_path)}
 
-        frame_count, fps = sm_get_video_frame_count_and_fps(str(path_obj))
+        frame_count, fps = get_video_frame_count_and_fps(str(path_obj))
         file_size = path_obj.stat().st_size
         duration = frame_count / fps if fps and fps > 0 else 0
 
@@ -1206,7 +1205,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 target_fps = orchestrator_payload.get("fps_helpers", 16)
                 
                 if isinstance(target_resolution_raw, str):
-                    parsed_res = sm_parse_resolution(target_resolution_raw)
+                    parsed_res = parse_resolution(target_resolution_raw)
                     if parsed_res is None:
                         raise ValueError(f"Invalid resolution format: {target_resolution_raw}")
                     target_resolution = snap_resolution_to_model_grid(parsed_res)
@@ -1251,7 +1250,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 )
                 
                 # Get frame count for logging
-                guidance_frame_count, _ = sm_get_video_frame_count_and_fps(composite_guidance_path)
+                guidance_frame_count, _ = get_video_frame_count_and_fps(composite_guidance_path)
                 travel_logger.success(
                     f"Composite guidance video created: {guidance_frame_count} frames, {len(structure_videos)} sources",
                     task_id=orchestrator_task_id_str
@@ -1312,7 +1311,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 target_fps = orchestrator_payload.get("fps_helpers", 16)
                 
                 if isinstance(target_resolution_raw, str):
-                    parsed_res = sm_parse_resolution(target_resolution_raw)
+                    parsed_res = parse_resolution(target_resolution_raw)
                     if parsed_res is None:
                         raise ValueError(f"Invalid resolution format: {target_resolution_raw}")
                     target_resolution = snap_resolution_to_model_grid(parsed_res)
@@ -1366,7 +1365,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     dprint=dprint
                 )
 
-                guidance_frame_count, _ = sm_get_video_frame_count_and_fps(structure_guidance_video_path)
+                guidance_frame_count, _ = get_video_frame_count_and_fps(structure_guidance_video_path)
                 travel_logger.success(f"Structure guidance video created: {guidance_frame_count} frames", task_id=orchestrator_task_id_str)
 
                 # Store guidance URL in config (unified format)
@@ -2288,7 +2287,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
         # MOVE (not copy) the WGP output to avoid creating duplicates
         try:
             # Ensure encoder has finished writing the source file
-            sm_wait_for_file_stable(video_to_process_abs_path, checks=3, interval=1.0, dprint=dprint)
+            wait_for_file_stable(video_to_process_abs_path, checks=3, interval=1.0, dprint=dprint)
 
             shutil.move(str(video_to_process_abs_path), str(moved_video_abs_path))
             print(f"[CHAIN_DEBUG] Moved WGP output from {video_to_process_abs_path} to {moved_video_abs_path}")
@@ -2326,7 +2325,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                 ) else None
 
                 if expected_len and expected_len > 0:
-                    actual_frames, actual_fps = sm_get_video_frame_count_and_fps(str(video_to_process_abs_path))
+                    actual_frames, actual_fps = get_video_frame_count_and_fps(str(video_to_process_abs_path))
                     dprint(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: ========== WGP OUTPUT ANALYSIS ==========")
                     dprint(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: WGP output video: {video_to_process_abs_path}")
                     dprint(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: WGP output total frames: {actual_frames}")
@@ -2349,7 +2348,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                         pass
                     
                     if actual_frames and actual_frames > expected_len:
-                        from source.video_utils import extract_frame_range_to_video as sm_extract_frame_range_to_video
+                        from source.video_utils import extract_frame_range_to_video as extract_frame_range_to_video
 
                         # CRITICAL: For SVI continuation, we need to preserve the last 4 prefix frames
                         # for stitching overlap. So we keep expected_len + SVI_STITCH_OVERLAP frames.
@@ -2375,7 +2374,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                         )
 
                         fps_for_trim = float(actual_fps) if actual_fps and actual_fps > 0 else float(full_orchestrator_payload.get("fps_helpers", 16))
-                        trimmed_result = sm_extract_frame_range_to_video(
+                        trimmed_result = extract_frame_range_to_video(
                             source_video=str(video_to_process_abs_path),
                             output_path=str(trimmed_video_abs_path),
                             start_frame=start_frame,
@@ -2385,7 +2384,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                         )
                         if trimmed_result and Path(trimmed_result).exists():
                             # Verify trimmed output (debug-only)
-                            trimmed_frames, trimmed_fps = sm_get_video_frame_count_and_fps(trimmed_result)
+                            trimmed_frames, trimmed_fps = get_video_frame_count_and_fps(trimmed_result)
                             debug_enabled = bool(
                                 full_orchestrator_payload.get("debug_mode_enabled", False)
                                 or db_ops.debug_mode
@@ -2474,7 +2473,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                     task_type="travel_segment"
                 )
                 
-                if sm_apply_saturation_to_video_ffmpeg(str(video_to_process_abs_path), saturated_video_output_abs_path, sat_level):
+                if apply_saturation_to_video_ffmpeg(str(video_to_process_abs_path), saturated_video_output_abs_path, sat_level):
                     print(f"[CHAIN_DEBUG] Saturation applied successfully to segment {segment_idx_completed}")
                     debug_video_analysis(saturated_video_output_abs_path, f"SATURATED_Seg{segment_idx_completed}", wgp_task_id)
                     dprint(f"Chain (Seg {segment_idx_completed}): Saturation successful. New path: {new_db_path}")
@@ -2531,7 +2530,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                     task_type="travel_segment"
                 )
 
-                matched_video_path = sm_apply_color_matching_to_video(
+                matched_video_path = apply_color_matching_to_video(
                     str(video_to_process_abs_path),
                     start_ref,
                     end_ref,
@@ -2567,7 +2566,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                     task_type="travel_segment"
                 )
 
-                if sm_overlay_start_end_images_above_video(
+                if overlay_start_end_images_above_video(
                     start_image_path=banner_start,
                     end_image_path=banner_end,
                     input_video_path=str(video_to_process_abs_path),
@@ -2795,9 +2794,9 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
         # Snapping is only needed for generation, not for stitching existing videos.
         parsed_res_wh_str = full_orchestrator_payload["parsed_resolution_wh"]
         try:
-            parsed_res_wh_from_payload = sm_parse_resolution(parsed_res_wh_str)
+            parsed_res_wh_from_payload = parse_resolution(parsed_res_wh_str)
             if parsed_res_wh_from_payload is None:
-                raise ValueError(f"sm_parse_resolution returned None for input: {parsed_res_wh_str}")
+                raise ValueError(f"parse_resolution returned None for input: {parsed_res_wh_str}")
             # NOTE: We use this as a fallback only. Actual resolution comes from input videos.
         except Exception as e_parse_res_stitch:
             msg = f"Stitch Task {stitch_task_id_str}: Invalid format or error parsing parsed_resolution_wh '{parsed_res_wh_str}': {e_parse_res_stitch}"
@@ -2904,7 +2903,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
             elif video_path_str_from_db.startswith("http"):
                 print(f"[STITCH_DEBUG] Case B: Remote URL detected for segment {seg_idx}")
                 try:
-                    from ..common_utils import download_file as sm_download_file
+                    from ..common_utils import download_file as download_file
                     remote_url = video_path_str_from_db
                     local_filename = Path(remote_url).name
                     local_download_path = stitch_processing_dir / f"seg{seg_idx:02d}_{local_filename}"
@@ -2917,7 +2916,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                     if local_download_path.exists():
                         print(f"[STITCH_DEBUG] Local copy exists, validating frame count...")
                         try:
-                            cached_frames, _ = sm_get_video_frame_count_and_fps(str(local_download_path))
+                            cached_frames, _ = get_video_frame_count_and_fps(str(local_download_path))
                             expected_segment_frames = full_orchestrator_payload["segment_frames_expanded"]
                             expected_frames = expected_segment_frames[seg_idx] if seg_idx < len(expected_segment_frames) else None
                             print(f"[STITCH_DEBUG] Cached file has {cached_frames} frames (expected: {expected_frames})")
@@ -2938,7 +2937,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                         # Remove stale cached file if it exists
                         if local_download_path.exists():
                             local_download_path.unlink()
-                        sm_download_file(remote_url, stitch_processing_dir, local_download_path.name)
+                        download_file(remote_url, stitch_processing_dir, local_download_path.name)
                         print(f"[STITCH_DEBUG] ✅ Download completed for segment {seg_idx}")
                         dprint(f"[DEBUG] Download completed for segment {seg_idx}")
                     else:
@@ -2985,7 +2984,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
         expected_segment_frames = full_orchestrator_payload["segment_frames_expanded"]
         for idx, video_path in enumerate(segment_video_paths_for_stitch):
             try:
-                frame_count, fps = sm_get_video_frame_count_and_fps(video_path)
+                frame_count, fps = get_video_frame_count_and_fps(video_path)
                 expected_frames = expected_segment_frames[idx] if idx < len(expected_segment_frames) else "unknown"
                 dprint(f"[CRITICAL DEBUG] Video {idx}: {video_path} -> {frame_count} frames @ {fps} FPS (expected: {expected_frames})")
                 if expected_frames != "unknown" and frame_count != expected_frames:
@@ -3097,7 +3096,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                         stable_paths.append(False)
                         continue
 
-                    file_stable = sm_wait_for_file_stable(video_path, checks=5, interval=1.0, dprint=dprint)
+                    file_stable = wait_for_file_stable(video_path, checks=5, interval=1.0, dprint=dprint)
                     if file_stable:
                         print(f"[CRITICAL DEBUG] Segment {idx} video file is stable: {video_path}")
                         stable_paths.append(True)
@@ -3119,7 +3118,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                 for attempt in range(max_extraction_attempts):
                     print(f"[CRITICAL DEBUG] Frame extraction attempt {attempt + 1}/{max_extraction_attempts}")
                     attempt_start_time = time.time()
-                    all_segment_frames_lists = [sm_extract_frames_from_video(p, dprint_func=dprint) for p in segment_video_paths_for_stitch]
+                    all_segment_frames_lists = [extract_frames_from_video(p, dprint_func=dprint) for p in segment_video_paths_for_stitch]
 
                     # [CRITICAL DEBUG] Log frame extraction results
                     print(f"[CRITICAL DEBUG] Frame extraction results (attempt {attempt + 1}):")
@@ -3175,10 +3174,10 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                                             print(f"[CRITICAL DEBUG] Deleted corrupted file: {failed_video_path}")
 
                                         # Re-download
-                                        sm_download_file(video_path_str_from_db, stitch_processing_dir, failed_video_path.name)
+                                        download_file(video_path_str_from_db, stitch_processing_dir, failed_video_path.name)
 
                                         # Wait for stability
-                                        if sm_wait_for_file_stable(failed_video_path, checks=5, interval=1.0, dprint=dprint):
+                                        if wait_for_file_stable(failed_video_path, checks=5, interval=1.0, dprint=dprint):
                                             print(f"[CRITICAL DEBUG] Re-downloaded segment {failed_idx} successfully")
                                             redownload_duration = time.time() - redownload_start
                                             attempt_info["redownloads"].append({
@@ -3355,7 +3354,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                             # Blend the non-anchor overlapping frames
                             frames_prev_for_fade = frames_prev_segment[-crossfade_count:] if crossfade_count > 0 else []
                             frames_curr_for_fade = frames_curr_segment[:crossfade_count]
-                            faded_frames = sm_cross_fade_overlap_frames(frames_prev_for_fade, frames_curr_for_fade, crossfade_count, "linear_sharp", crossfade_sharp_amt)
+                            faded_frames = cross_fade_overlap_frames(frames_prev_for_fade, frames_curr_for_fade, crossfade_count, "linear_sharp", crossfade_sharp_amt)
                             final_stitched_frames.extend(faded_frames)
                             print(f"[CRITICAL DEBUG] [REGENERATE_ANCHORS] Added {len(faded_frames)} cross-faded frames (skipping anchor)")
 
@@ -3376,7 +3375,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                                     del final_stitched_frames[-frames_to_remove:]
                                     print(f"[CRITICAL DEBUG] Removed {frames_to_remove} duplicate overlap frames before cross-fade (stitch point {i})")
                             # Blend the overlapping frames
-                            faded_frames = sm_cross_fade_overlap_frames(frames_prev_segment, frames_curr_segment, current_overlap_val, "linear_sharp", crossfade_sharp_amt)
+                            faded_frames = cross_fade_overlap_frames(frames_prev_segment, frames_curr_segment, current_overlap_val, "linear_sharp", crossfade_sharp_amt)
                             final_stitched_frames.extend(faded_frames)
                             print(f"[CRITICAL DEBUG] Added {len(faded_frames)} cross-faded frames")
 
@@ -3409,21 +3408,21 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                 print(f"[CRITICAL DEBUG] Actual output: {actual_output_frames}")
                 print(f"[CRITICAL DEBUG] Match: {expected_output_frames == actual_output_frames}")
                 
-                created_video_path_obj = sm_create_video_from_frames_list(final_stitched_frames, path_for_raw_stitched_video, final_fps, parsed_res_wh)
+                created_video_path_obj = create_video_from_frames_list(final_stitched_frames, path_for_raw_stitched_video, final_fps, parsed_res_wh)
                 if created_video_path_obj and created_video_path_obj.exists():
                     current_stitched_video_path = created_video_path_obj
                 else:
-                    raise RuntimeError(f"Stitch: Cross-fade sm_create_video_from_frames_list failed to produce video at {path_for_raw_stitched_video}")
+                    raise RuntimeError(f"Stitch: Cross-fade create_video_from_frames_list failed to produce video at {path_for_raw_stitched_video}")
 
             else: 
                 dprint(f"Stitch: Using simple FFmpeg concatenation. Output to: {path_for_raw_stitched_video}")
                 try:
-                    from ..common_utils import stitch_videos_ffmpeg as sm_stitch_videos_ffmpeg
+                    from ..common_utils import stitch_videos_ffmpeg as stitch_videos_ffmpeg
                 except ImportError:
                     print(f"[CRITICAL ERROR Task ID: {stitch_task_id_str}] Failed to import 'stitch_videos_ffmpeg'. Cannot proceed with stitching.")
                     raise
 
-                if sm_stitch_videos_ffmpeg(segment_video_paths_for_stitch, str(path_for_raw_stitched_video)):
+                if stitch_videos_ffmpeg(segment_video_paths_for_stitch, str(path_for_raw_stitched_video)):
                     current_stitched_video_path = path_for_raw_stitched_video
                 else: 
                     raise RuntimeError(f"Stitch: Simple FFmpeg concatenation failed for output {path_for_raw_stitched_video}.")
@@ -3437,7 +3436,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
             print(f"[STITCH UPSCALE] Starting upscale process: {upscale_factor}x using model {upscale_model_name}")
             dprint(f"Stitch: Upscaling (x{upscale_factor}) video {current_stitched_video_path.name} using model {upscale_model_name}")
             
-            original_frames_count, original_fps = sm_get_video_frame_count_and_fps(str(current_stitched_video_path))
+            original_frames_count, original_fps = get_video_frame_count_and_fps(str(current_stitched_video_path))
             if original_frames_count is None or original_frames_count == 0:
                 raise ValueError(f"Stitch: Cannot get frame count or 0 frames for video {current_stitched_video_path} before upscaling.")
             
@@ -3448,7 +3447,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
             target_width_upscaled = int(parsed_res_wh[0] * upscale_factor)
             target_height_upscaled = int(parsed_res_wh[1] * upscale_factor)
             
-            upscale_sub_task_id = sm_generate_unique_task_id(f"upscale_stitch_{orchestrator_run_id}_")
+            upscale_sub_task_id = generate_unique_task_id(f"upscale_stitch_{orchestrator_run_id}_")
             
             upscale_payload = {
                 "task_id": upscale_sub_task_id,
@@ -3493,7 +3492,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                     
                     # Analyze upscaled result
                     try:
-                        upscaled_frame_count, upscaled_fps = sm_get_video_frame_count_and_fps(str(upscaled_video_abs_path))
+                        upscaled_frame_count, upscaled_fps = get_video_frame_count_and_fps(str(upscaled_video_abs_path))
                         print(f"[STITCH UPSCALE] Upscaled result: {upscaled_frame_count} frames @ {upscaled_fps} FPS")
                         dprint(f"[DEBUG] Post-upscale analysis: {upscaled_frame_count} frames, {upscaled_fps} FPS")
                         
@@ -3563,7 +3562,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
         
         # Analyze final result
         try:
-            final_frame_count, final_fps = sm_get_video_frame_count_and_fps(str(final_video_path))
+            final_frame_count, final_fps = get_video_frame_count_and_fps(str(final_video_path))
             final_duration = final_frame_count / final_fps if final_fps > 0 else 0
             print(f"[STITCH FINAL] Final video: {final_frame_count} frames @ {final_fps} FPS = {final_duration:.2f}s")
             print(f"[STITCH_FINAL_ANALYSIS] Complete stitching analysis:")
@@ -3576,7 +3575,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                 actual_segment_counts = []
                 for p in segment_video_paths_for_stitch:
                     try:
-                        fc, _fps = sm_get_video_frame_count_and_fps(str(p))
+                        fc, _fps = get_video_frame_count_and_fps(str(p))
                         if fc is None:
                             continue
                         actual_segment_counts.append(int(fc))

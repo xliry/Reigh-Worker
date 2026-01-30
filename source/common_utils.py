@@ -1467,7 +1467,7 @@ def image_to_frame(image_path_str: str | Path, target_resolution_wh: tuple[int, 
         dprint(f"Error loading image {image_path} (original input {image_path_str}): {e}")
         return None
 
-def _apply_strength_to_image(
+def apply_strength_to_image(
     image_path_input: Path | str, # Changed name to avoid confusion
     strength: float,
     output_path: Path,
@@ -1549,7 +1549,7 @@ def get_image_dimensions_pil(image_path: str | Path) -> tuple[int, int]:
         return img.size
 
 # Added to adjust the brightness of an image/frame.
-def _adjust_frame_brightness(frame: np.ndarray, factor: float) -> np.ndarray:
+def adjust_frame_brightness(frame: np.ndarray, factor: float) -> np.ndarray:
     """Adjusts the brightness of a given frame.
     The 'factor' is interpreted as a delta from the CLI argument:
     - Positive factor (e.g., 0.1) makes it darker (target_alpha = 1.0 - 0.1 = 0.9).
@@ -1562,7 +1562,7 @@ def _adjust_frame_brightness(frame: np.ndarray, factor: float) -> np.ndarray:
     cv2_alpha = 1.0 - factor 
     return cv2.convertScaleAbs(frame, alpha=cv2_alpha, beta=0)
 
-def sm_get_unique_target_path(target_dir: Path, name_stem: str, suffix: str) -> Path:
+def get_unique_target_path(target_dir: Path, name_stem: str, suffix: str) -> Path:
     """Generates a unique target Path in the given directory by appending a number if needed."""
     if not suffix.startswith('.'):
         suffix = f".{suffix}"

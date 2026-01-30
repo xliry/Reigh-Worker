@@ -32,6 +32,32 @@ from ..common_utils import download_video_if_url, get_video_frame_count_and_fps,
 from ..video_utils import extract_frames_from_video, reverse_video
 
 
+def _get_video_resolution(video_path: str | Path, dprint=print) -> Tuple[int, int] | None:
+    """
+    Get video resolution (width, height) using ffprobe.
+
+    Returns:
+        (width, height) tuple, or None if detection fails
+    """
+    try:
+        probe_cmd = [
+            'ffprobe', '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height',
+            '-of', 'csv=p=0',
+            str(video_path)
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            dprint(f"[GET_RESOLUTION] ffprobe failed: {result.stderr}")
+            return None
+        width_str, height_str = result.stdout.strip().split(',')
+        return (int(width_str), int(height_str))
+    except Exception as e:
+        dprint(f"[GET_RESOLUTION] Error detecting resolution: {e}")
+        return None
+
+
 def _extract_boundary_frames_for_vlm(
     clip_list: List[dict],
     temp_dir: Path,
@@ -533,6 +559,12 @@ def _extract_join_settings_from_payload(orchestrator_payload: dict) -> dict:
     Returns:
         Dict of join settings for join_clips_segment tasks
     """
+    # Note: If use_input_video_resolution=True, the orchestrator will detect the actual
+    # resolution from the first clip and override join_settings["resolution"] with it.
+    # We initially set resolution=None here to avoid passing through a potentially wrong
+    # client-provided value; the orchestrator will set the correct value after detection.
+    use_input_res = orchestrator_payload.get("use_input_video_resolution", False)
+
     return {
         "context_frame_count": orchestrator_payload.get("context_frame_count", 8),
         "gap_frame_count": orchestrator_payload.get("gap_frame_count", 53),
@@ -541,8 +573,8 @@ def _extract_join_settings_from_payload(orchestrator_payload: dict) -> dict:
         "negative_prompt": orchestrator_payload.get("negative_prompt", ""),
         "model": orchestrator_payload.get("model", "wan_2_2_vace_lightning_baseline_2_2_2"),
         "aspect_ratio": orchestrator_payload.get("aspect_ratio"),
-        "resolution": orchestrator_payload.get("resolution"),
-        "use_input_video_resolution": orchestrator_payload.get("use_input_video_resolution", False),
+        "resolution": None if use_input_res else orchestrator_payload.get("resolution"),
+        "use_input_video_resolution": use_input_res,
         "fps": orchestrator_payload.get("fps"),
         "use_input_video_fps": orchestrator_payload.get("use_input_video_fps", False),
         "phase_config": orchestrator_payload.get("phase_config"),
@@ -1126,6 +1158,33 @@ def _handle_join_clips_orchestrator_task(
             dprint(f"[JOIN_ORCHESTRATOR] Clip frame validation complete, frame counts: {frame_counts}")
         else:
             dprint(f"[JOIN_ORCHESTRATOR] Frame validation skipped (skip_frame_validation=True)")
+
+        # === DETECT RESOLUTION FROM INPUT VIDEO (when use_input_video_resolution=True) ===
+        if join_settings.get("use_input_video_resolution", False):
+            dprint(f"[JOIN_ORCHESTRATOR] use_input_video_resolution=True, detecting resolution from first clip...")
+
+            # Download first clip to detect resolution
+            first_clip_url = clip_list[0].get("url")
+            if first_clip_url:
+                resolution_temp_dir = current_run_output_dir / "resolution_temp"
+                resolution_temp_dir.mkdir(parents=True, exist_ok=True)
+
+                local_first_clip = download_video_if_url(
+                    first_clip_url,
+                    download_target_dir=resolution_temp_dir,
+                    task_id_for_logging=orchestrator_task_id_str,
+                    descriptive_name="detect_resolution"
+                )
+
+                if local_first_clip and Path(local_first_clip).exists():
+                    detected_res = _get_video_resolution(local_first_clip, dprint=dprint)
+                    if detected_res:
+                        join_settings["resolution"] = list(detected_res)  # [width, height]
+                        dprint(f"[JOIN_ORCHESTRATOR] ✓ Detected resolution from input video: {detected_res}")
+                    else:
+                        dprint(f"[JOIN_ORCHESTRATOR] ⚠ Could not detect resolution, segments will detect from frames")
+                else:
+                    dprint(f"[JOIN_ORCHESTRATOR] ⚠ Could not download first clip for resolution detection")
 
         # === VLM PROMPT ENHANCEMENT (optional) ===
         enhance_prompt = orchestrator_payload.get("enhance_prompt", False)

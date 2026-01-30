@@ -25,7 +25,7 @@ from ..common_utils import (
     get_video_frame_count_and_fps
 )
 from ..video_utils import (
-    extract_frames_from_video as sm_extract_frames_from_video,
+    extract_frames_from_video,
 )
 from ..vace_frame_utils import (
     create_guide_and_mask_for_generation,
@@ -138,7 +138,7 @@ def _handle_inpaint_frames_task(
         dprint(f"[INPAINT_FRAMES] Task {task_id}: Extracting frames from video...")
 
         try:
-            all_frames = sm_extract_frames_from_video(str(video), dprint_func=dprint)
+            all_frames = extract_frames_from_video(str(video), dprint_func=dprint)
             if not all_frames or len(all_frames) != total_frame_count:
                 error_msg = f"Failed to extract frames: expected {total_frame_count}, got {len(all_frames) if all_frames else 0}"
                 dprint(f"[INPAINT_FRAMES_ERROR] Task {task_id}: {error_msg}")

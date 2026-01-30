@@ -16,7 +16,7 @@ from PIL import Image  # type: ignore
 from huggingface_hub import hf_hub_download  # type: ignore
 
 from source.logging_utils import headless_logger
-from source.common_utils import download_image_if_url as sm_download_image_if_url
+from source.common_utils import download_image_if_url
 from source.phase_multiplier_utils import format_phase_multipliers, extract_phase_values
 
 
@@ -160,7 +160,7 @@ class QwenHandler:
         
         downloads_dir = Path("outputs/qwen_edit_images")
         downloads_dir.mkdir(parents=True, exist_ok=True)
-        local_image_path = sm_download_image_if_url(
+        local_image_path = download_image_if_url(
             image_url, downloads_dir, 
             task_id_for_logging=self.task_id, 
             debug_mode=False,
@@ -460,7 +460,7 @@ class QwenHandler:
             try:
                 downloads_dir = Path("outputs/style_refs")
                 downloads_dir.mkdir(parents=True, exist_ok=True)
-                local_ref_path = sm_download_image_if_url(
+                local_ref_path = download_image_if_url(
                     reference_image, downloads_dir, 
                     task_id_for_logging=self.task_id, 
                     debug_mode=False, 

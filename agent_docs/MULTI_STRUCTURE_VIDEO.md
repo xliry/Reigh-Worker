@@ -360,7 +360,7 @@ Changes:
 
 ### Phase 2: Orchestrator Changes
 
-**File:** `source/sm_functions/travel_between_images.py`
+**File:** `source/task_handlers/travel_between_images.py`
 
 #### Task 2.1: Add validation
 

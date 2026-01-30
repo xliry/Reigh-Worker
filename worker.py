@@ -19,22 +19,9 @@ os.environ.setdefault("XDG_RUNTIME_DIR", "/tmp/runtime-root")
 os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
-# Redirect ALSA errors to /dev/null (can't be suppressed via Python)
-try:
-    import ctypes
-    ERROR_HANDLER_FUNC = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int,
-                                          ctypes.c_char_p, ctypes.c_int,
-                                          ctypes.c_char_p)
-    def py_error_handler(filename, line, function, err, fmt):
-        pass
-    c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
-    try:
-        asound = ctypes.cdll.LoadLibrary('libasound.so.2')
-        asound.snd_lib_error_set_handler(c_error_handler)
-    except:
-        pass  # ALSA not available, no need to suppress
-except:
-    pass  # ctypes not available or other error
+# Suppress ALSA errors on Linux (moved to platform_utils for cleaner code)
+from source.platform_utils import suppress_alsa_errors
+suppress_alsa_errors()
 
 import argparse
 import time
@@ -68,7 +55,7 @@ from source.worker_utils import (
 )
 from source.heartbeat_utils import start_heartbeat_guardian_process
 from source.task_registry import TaskRegistry
-from source.sm_functions import travel_between_images as tbi
+from source.task_handlers import travel_between_images as tbi
 from source.lora_utils import cleanup_legacy_lora_collisions
 from source.common_utils import prepare_output_path, _get_task_type_directory
 import shutil
@@ -96,22 +83,9 @@ def move_wgp_output_to_task_type_dir(output_path: str, task_type: str, task_id: 
     Returns:
         New path if file was moved, original path otherwise
     """
-    # List of WGP generation task types that should be organized
-    wgp_task_types = {
-        "vace", "vace_21", "vace_22",
-        "flux",
-        "t2v", "t2v_22", "wan_2_2_t2i",
-        "i2v", "i2v_22",
-        "hunyuan",
-        "ltxv",
-        "qwen_image_edit", "qwen_image_style", "image_inpaint", "annotated_image_edit",
-        "inpaint_frames",  # Specialized handler that enqueues WGP tasks
-        "generate_video",
-        "z_image_turbo", "z_image_turbo_i2i"
-    }
-
     # Only process WGP task types
-    if task_type not in wgp_task_types:
+    from source.task_types import WGP_TASK_TYPES
+    if task_type not in WGP_TASK_TYPES:
         return output_path
 
     try:
@@ -231,7 +205,7 @@ def parse_args():
     parser.add_argument("--supabase-url", type=str, default="https://wczysqzxlwdndgxitrvc.supabase.co")
     parser.add_argument("--reigh-access-token", type=str, default=None, help="Access token for Reigh API (preferred)")
     parser.add_argument("--supabase-access-token", type=str, default=None, help="Legacy alias for --reigh-access-token")
-    parser.add_argument("--supabase-anon-key", type=str, default="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndjenlzcXp4bHdkbmRneGl0cnZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTE1MDI4NjgsImV4cCI6MjA2NzA3ODg2OH0.r-4RyHZiDibUjgdgDDM2Vo6x3YpgIO5-BTwfkB2qyYA")
+    parser.add_argument("--supabase-anon-key", type=str, default=None, help="Supabase anon key (set via env SUPABASE_ANON_KEY)")
     
     # WGP Globals
     parser.add_argument("--wgp-attention-mode", type=str, default=None)

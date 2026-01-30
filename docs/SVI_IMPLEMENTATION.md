@@ -268,7 +268,7 @@ Mask layout:  [   1 1 1 1    |    0 0 0 ... 0  |     1    ]
 
 | File | Purpose |
 |------|---------|
-| `source/sm_functions/travel_between_images.py` | Orchestrator, segment creation |
+| `source/task_handlers/travel_between_images.py` | Orchestrator, segment creation |
 | `source/task_registry.py` | Task → generation_params conversion |
 | `headless_model_management.py` | Model patching, generation dispatch |
 | `Wan2GP/wgp.py` | Video loading, parameter resolution |

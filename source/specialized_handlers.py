@@ -9,8 +9,8 @@ from PIL import Image
 import cv2
 
 from . import db_operations as db_ops
-from .common_utils import sm_get_unique_target_path, parse_resolution as sm_parse_resolution, prepare_output_path, save_frame_from_video, report_orchestrator_failure, prepare_output_path_with_upload, upload_and_get_final_output_location
-from .video_utils import rife_interpolate_images_to_video as sm_rife_interpolate_images_to_video
+from .common_utils import get_unique_target_path, parse_resolution, prepare_output_path, save_frame_from_video, report_orchestrator_failure, prepare_output_path_with_upload, upload_and_get_final_output_location
+from .video_utils import rife_interpolate_images_to_video
 from .logging_utils import task_logger
 
 def handle_extract_frame_task(task_params_dict: dict, main_output_dir_base: Path, task_id: str, dprint: callable):
@@ -154,11 +154,11 @@ def handle_rife_interpolate_task(task_params_dict: dict, main_output_dir_base: P
         dprint(f"  Input 1: {input_image1_path}")
         dprint(f"  Input 2: {input_image2_path}")
 
-        rife_success = sm_rife_interpolate_images_to_video(
+        rife_success = rife_interpolate_images_to_video(
             image1=pil_image_start,
             image2=pil_image_end,
             num_frames=int(num_rife_frames),
-            resolution_wh=sm_parse_resolution(resolution_str),
+            resolution_wh=parse_resolution(resolution_str),
             output_path=final_save_path_for_video,
             fps=16,
             dprint_func=lambda msg: dprint(f"[Task ID: {task_id}] (rife_util) {msg}")

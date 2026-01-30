@@ -343,95 +343,10 @@ class WanOrchestrator:
                 self._test_vace_module = test_vace_module
                 self._apply_changes = apply_changes
 
-                # Monkeypatch upstream to support Qwen family without modifying Wan2GP files
+                # Apply WGP monkeypatches for headless operation (Qwen support, LoRA fixes, etc.)
                 import wgp as wgp
-
-                # Patch load_wan_model to route Qwen to its dedicated handler
-                try:
-                    _orig_load_wan_model = wgp.load_wan_model
-
-                    def _patched_load_wan_model(model_filename, model_type, base_model_type, model_def,
-                                                quantizeTransformer=False, dtype=None, VAE_dtype=None,
-                                                mixed_precision_transformer=False, save_quantized=False):
-                        try:
-                            base = wgp.get_base_model_type(base_model_type)
-                        except Exception:
-                            base = base_model_type
-                        if isinstance(base, str) and "qwen" in base:
-                            model_logger.debug("[QWEN_LOAD_DEBUG] Routing to Qwen family loader via monkeypatch")
-                            from models.qwen.qwen_handler import family_handler as _qwen_handler  # type: ignore
-                            pipe_processor, pipe = _qwen_handler.load_model(
-                                model_filename=model_filename,
-                                model_type=model_type,
-                                base_model_type=base_model_type,
-                                model_def=model_def,
-                                quantizeTransformer=quantizeTransformer,
-                                text_encoder_quantization=wgp.text_encoder_quantization,
-                                dtype=dtype,
-                                VAE_dtype=VAE_dtype,
-                                mixed_precision_transformer=mixed_precision_transformer,
-                                save_quantized=save_quantized,
-                            )
-                            return pipe_processor, pipe
-                        # Fallback to original WAN loader
-                        return _orig_load_wan_model(
-                            model_filename, model_type, base_model_type, model_def,
-                            quantizeTransformer=quantizeTransformer, dtype=dtype, VAE_dtype=VAE_dtype,
-                            mixed_precision_transformer=mixed_precision_transformer, save_quantized=save_quantized
-                        )
-
-                    wgp.load_wan_model = _patched_load_wan_model  # type: ignore
-                except Exception as _e:
-                    model_logger.debug(f"[QWEN_LOAD_DEBUG] Failed to monkeypatch load_wan_model: {_e}")
-
-                # Patch get_lora_dir to redirect Qwen models to loras_qwen if available
-                try:
-                    _orig_get_lora_dir = wgp.get_lora_dir
-
-                    def _patched_get_lora_dir(model_type: str):
-                        try:
-                            mt = (model_type or "").lower()
-                            if "qwen" in mt:
-                                qwen_dir = os.path.join(self.wan_root, "loras_qwen")
-                                if os.path.isdir(qwen_dir):
-                                    return qwen_dir
-                        except Exception:
-                            pass
-                        return _orig_get_lora_dir(model_type)
-
-                    wgp.get_lora_dir = _patched_get_lora_dir  # type: ignore
-                except Exception as _e:
-                    model_logger.debug(f"[QWEN_LOAD_DEBUG] Failed to monkeypatch get_lora_dir: {_e}")
-
-                # Harmonize LoRA multiplier parsing across pipelines:
-                # Use the 3-phase capable parser so Qwen pipeline (which expects phase3/shared)
-                # receives a compatible slists_dict. This is backward compatible for 2-phase models.
-                try:
-                    from shared.utils import loras_mutipliers as _shared_lora_utils  # type: ignore
-                    wgp.parse_loras_multipliers = _shared_lora_utils.parse_loras_multipliers  # type: ignore
-                    # preparse is identical, but patching it keeps the source consistent
-                    wgp.preparse_loras_multipliers = _shared_lora_utils.preparse_loras_multipliers  # type: ignore
-                except Exception as _e:
-                    model_logger.debug(f"[QWEN_LOAD_DEBUG] Failed to monkeypatch lora parsers: {_e}")
-
-                # Optionally disable Qwen's built-in inpainting LoRA (preload_URLs) in headless mode.
-                # Default: disabled, unless HEADLESS_WAN2GP_ENABLE_QWEN_INPAINTING_LORA=1 is set.
-                try:
-                    from models.qwen import qwen_main as _qwen_main  # type: ignore
-                    _orig_qwen_get_loras_transformer = _qwen_main.model_factory.get_loras_transformer  # type: ignore
-
-                    def _patched_qwen_get_loras_transformer(self, get_model_recursive_prop, model_type, model_mode, **kwargs):  # type: ignore
-                        try:
-                            if os.environ.get("HEADLESS_WAN2GP_ENABLE_QWEN_INPAINTING_LORA", "0") != "1":
-                                return [], []
-                        except Exception:
-                            # If env check fails, fall back to disabled behavior
-                            return [], []
-                        return _orig_qwen_get_loras_transformer(self, get_model_recursive_prop, model_type, model_mode, **kwargs)
-
-                    _qwen_main.model_factory.get_loras_transformer = _patched_qwen_get_loras_transformer  # type: ignore
-                except Exception as _e:
-                    model_logger.debug(f"[QWEN_LOAD_DEBUG] Failed to monkeypatch Qwen get_loras_transformer: {_e}")
+                from source.wgp_patches import apply_all_wgp_patches
+                apply_all_wgp_patches(wgp, self.wan_root)
                 
                 # Initialize WGP global state (normally done by UI)
                 import wgp

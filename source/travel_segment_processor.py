@@ -32,7 +32,7 @@ from .common_utils import (
     get_video_frame_count_and_fps,
     prepare_output_path
 )
-from .video_utils import create_guide_video_for_travel_segment as sm_create_guide_video_for_travel_segment
+from .video_utils import create_guide_video_for_travel_segment
 from .params.structure_guidance import StructureGuidanceConfig
 from . import db_operations as db_ops
 
@@ -234,7 +234,7 @@ class TravelSegmentProcessor:
             is_single_image_journey = self._detect_single_image_journey()
 
             # Create guide video using shared function
-            guide_video_path = sm_create_guide_video_for_travel_segment(
+            guide_video_path = create_guide_video_for_travel_segment(
                 segment_idx_for_logging=ctx.segment_idx,
                 end_anchor_image_index=end_anchor_img_path_str_idx,
                 is_first_segment_from_scratch=is_first_segment_from_scratch,

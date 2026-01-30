@@ -56,23 +56,9 @@ def _download_lora_from_url(url: str, task_id: str, dprint=None, model_type: str
         if dprint:
             dprint(f"[LORA_DOWNLOAD] Task {task_id}: Collision-prone LoRA detected: {generic_filename} → {local_filename}")
 
-        # Check ALL standard lora directories (using absolute paths) and delete old generic versions
-        lora_search_dirs = [
-            # Wan2GP LoRA directories
-            wan_dir / "loras",
-            wan_dir / "loras" / "wan",
-            wan_dir / "loras_i2v",
-            wan_dir / "loras_hunyuan",
-            wan_dir / "loras_hunyuan" / "1.5",
-            wan_dir / "loras_hunyuan_i2v",
-            wan_dir / "loras_flux",
-            wan_dir / "loras_qwen",
-            wan_dir / "loras_ltxv",
-            wan_dir / "loras_kandinsky5",
-            # Also check repo root for any stray files from previous bugs
-            repo_root / "loras",
-            repo_root / "loras" / "wan",
-        ]
+        # Check ALL standard lora directories (using centralized paths)
+        from source.lora_paths import get_lora_search_dirs
+        lora_search_dirs = get_lora_search_dirs(wan_dir, repo_root)
 
         for search_dir in lora_search_dirs:
             if search_dir.is_dir():
@@ -88,42 +74,9 @@ def _download_lora_from_url(url: str, task_id: str, dprint=None, model_type: str
                         if dprint:
                             dprint(f"[LORA_DOWNLOAD] Task {task_id}: ⚠️  Failed to delete old LoRA {old_path}: {e}")
 
-    # Determine LoRA directory based on model type
-    # Each model family has its own LoRA directory in Wan2GP
-    # Always use absolute paths under Wan2GP directory
-    lora_dir = wan_dir / "loras"  # Default fallback
-
-    if model_type:
-        model_lower = model_type.lower()
-
-        # Wan 2.x / VACE models → loras/wan
-        if "wan" in model_lower or "vace" in model_lower:
-            lora_dir = wan_dir / "loras" / "wan"
-
-        # Hunyuan models - check I2V first (more specific), then 1.5, then general
-        elif "hunyuan" in model_lower:
-            if "i2v" in model_lower:
-                lora_dir = wan_dir / "loras_hunyuan_i2v"
-            elif "1_5" in model_lower or "1.5" in model_lower:
-                lora_dir = wan_dir / "loras_hunyuan" / "1.5"
-            else:
-                lora_dir = wan_dir / "loras_hunyuan"
-
-        # Flux models → loras_flux
-        elif "flux" in model_lower:
-            lora_dir = wan_dir / "loras_flux"
-
-        # Qwen models → loras_qwen
-        elif "qwen" in model_lower:
-            lora_dir = wan_dir / "loras_qwen"
-
-        # LTX-Video models → loras_ltxv
-        elif "ltx" in model_lower:
-            lora_dir = wan_dir / "loras_ltxv"
-
-        # Kandinsky models → loras_kandinsky5
-        elif "kandinsky" in model_lower:
-            lora_dir = wan_dir / "loras_kandinsky5"
+    # Determine LoRA directory based on model type (centralized in lora_paths.py)
+    from source.lora_paths import get_lora_dir_for_model
+    lora_dir = get_lora_dir_for_model(model_type, wan_dir)
 
     local_path = lora_dir / local_filename
     

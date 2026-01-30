@@ -29,7 +29,7 @@ from datetime import datetime
 # Add project to Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from source.sm_functions.inpaint_frames import _handle_inpaint_frames_task
+from source.task_handlers.inpaint_frames import _handle_inpaint_frames_task
 
 
 def run_inpaint_frames(

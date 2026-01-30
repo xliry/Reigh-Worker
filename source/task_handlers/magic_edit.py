@@ -19,8 +19,8 @@ except ImportError:
 
 from .. import db_operations as db_ops
 from ..common_utils import (
-    sm_get_unique_target_path,
-    download_image_if_url as sm_download_image_if_url,
+    get_unique_target_path,
+    download_image_if_url,
     prepare_output_path_with_upload,
     upload_and_get_final_output_location,
     report_orchestrator_failure

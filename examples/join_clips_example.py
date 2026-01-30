@@ -28,7 +28,7 @@ from datetime import datetime
 # Add project to Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from source.sm_functions.join_clips import _handle_join_clips_task
+from source.task_handlers.join_clips import _handle_join_clips_task
 
 
 def run_join_clips(
