@@ -633,31 +633,43 @@ class TravelSegmentProcessor:
     
     def _detect_single_image_journey(self) -> bool:
         """
-        Detect if this is a single image journey.
+        Detect if this is a single image journey (I2V mode, no end anchor).
         
         A single image journey is when:
-        - Only one input image is provided
+        - Only one input image is provided for this segment
         - Not continuing from a video
-        - This segment is both first and last (entire journey in one segment)
+        - AND EITHER:
+          - This segment is both first and last (entire project is single image)
+          - OR this is a trailing segment (is_last_segment=True, has no end target)
         
         Returns:
-            True if this is a single image journey, False otherwise
+            True if this is a single image journey (use I2V mode), False otherwise
         """
         ctx = self.ctx
         
         input_images_for_check = ctx.full_orchestrator_payload.get("input_image_paths_resolved", [])
+        is_first_segment = ctx.segment_params.get("is_first_segment", False)
+        is_last_segment = ctx.segment_params.get("is_last_segment", False)
+        has_continue_video = ctx.full_orchestrator_payload.get("continue_from_video_resolved_path") is not None
+        
+        # Single image journey detection:
+        # 1. Must have exactly 1 input image
+        # 2. Must not be continuing from a video
+        # 3. Either: (a) entire project is one segment, OR (b) this is a trailing segment
         is_single_image_journey = (
             len(input_images_for_check) == 1
-            and ctx.full_orchestrator_payload.get("continue_from_video_resolved_path") is None
-            and ctx.segment_params.get("is_first_segment")
-            and ctx.segment_params.get("is_last_segment")
+            and not has_continue_video
+            and (
+                (is_first_segment and is_last_segment)  # Single image project
+                or is_last_segment  # Trailing segment (no end target image)
+            )
         )
         
         ctx.dprint(f"[SINGLE_IMAGE_DEBUG] Seg {ctx.segment_idx}: Single image journey detection:")
         ctx.dprint(f"[SINGLE_IMAGE_DEBUG]   Input images count: {len(input_images_for_check)}")
-        ctx.dprint(f"[SINGLE_IMAGE_DEBUG]   Continue from video: {ctx.full_orchestrator_payload.get('continue_from_video_resolved_path') is not None}")
-        ctx.dprint(f"[SINGLE_IMAGE_DEBUG]   Is first segment: {ctx.segment_params.get('is_first_segment')}")
-        ctx.dprint(f"[SINGLE_IMAGE_DEBUG]   Is last segment: {ctx.segment_params.get('is_last_segment')}")
+        ctx.dprint(f"[SINGLE_IMAGE_DEBUG]   Continue from video: {has_continue_video}")
+        ctx.dprint(f"[SINGLE_IMAGE_DEBUG]   Is first segment: {is_first_segment}")
+        ctx.dprint(f"[SINGLE_IMAGE_DEBUG]   Is last segment: {is_last_segment}")
         ctx.dprint(f"[SINGLE_IMAGE_DEBUG]   Result: {is_single_image_journey}")
         
         return is_single_image_journey
