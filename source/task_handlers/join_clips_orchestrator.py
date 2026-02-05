@@ -779,9 +779,8 @@ def _create_join_chain_tasks(
             "join_index": idx,
             "is_first_join": (idx == 0),
             "is_last_join": (idx == num_joins - 1),
-            # Standardized fields for completion handler
+            # Standardized field for completion handler
             "child_order": idx,
-            "is_single_item": (num_joins == 1),
 
             # First join has explicit starting path, rest fetch from dependency
             "starting_video_path": clip_start.get("url") if idx == 0 else None,
@@ -888,9 +887,8 @@ def _create_parallel_join_tasks(
             "transition_index": idx,  # Used for ordering in final stitch
             "is_first_join": False,   # Not relevant for transition_only
             "is_last_join": False,    # Not relevant for transition_only
-            # Standardized fields for completion handler
+            # Standardized field for completion handler
             "child_order": idx,
-            "is_single_item": (num_joins == 1),
 
             # Both clips are explicit (no dependency fetch)
             "starting_video_path": clip_start.get("url"),
