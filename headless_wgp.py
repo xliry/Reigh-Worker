@@ -331,7 +331,7 @@ class WanOrchestrator:
                 sys.argv = ["headless_wgp.py"]
                 from wgp import (
                     generate_video, get_base_model_type, get_model_family,
-                    test_vace_module, apply_changes
+                    test_vace_module,
                 )
 
                 # Verify directory didn't change during wgp import
@@ -342,7 +342,7 @@ class WanOrchestrator:
                 self._get_base_model_type = get_base_model_type
                 self._get_model_family = get_model_family
                 self._test_vace_module = test_vace_module
-                self._apply_changes = apply_changes
+                # apply_changes removed in WGP v10.83 - config is applied at module level
 
                 # Apply WGP monkeypatches for headless operation (Qwen support, LoRA fixes, etc.)
                 import wgp as wgp
@@ -457,43 +457,29 @@ class WanOrchestrator:
                 default_model_type = "t2v"
             self.state["model_type"] = default_model_type
 
-            # Upstream apply_changes signature accepts a single save_path_choice
-            outputs_dir = "outputs/"
+            # WGP v10.83+: config is applied at module level during import.
+            # We just need to override output paths and ensure sensible defaults.
             try:
-                orchestrator_logger.debug("Calling wgp.apply_changes() to initialize defaults...")
-                self._apply_changes(
-                    self.state,
-                    transformer_types_choices=["t2v"],
-                    transformer_dtype_policy_choice="auto",
-                    text_encoder_quantization_choice="bf16",
-                    VAE_precision_choice="fp32",
-                    mixed_precision_choice=0,
-                    save_path_choice=outputs_dir,
-                    image_save_path_choice=outputs_dir,
-                    attention_choice="auto",
-                    compile_choice="",
-                    profile_choice=1,  # Profile 1 for 24GB+ VRAM (4090/3090)
-                    vae_config_choice="default",
-                    metadata_choice="none",
-                    quantization_choice="int8",
-                    preload_model_policy_choice=[]
+                orchestrator_logger.debug("Applying headless config overrides to WGP module-level variables...")
+
+                # Override output paths in both server_config dict and module-level vars
+                wgp.server_config['save_path'] = absolute_outputs_path
+                wgp.server_config['image_save_path'] = absolute_outputs_path
+                wgp.server_config['audio_save_path'] = absolute_outputs_path
+                wgp.save_path = absolute_outputs_path
+                wgp.image_save_path = absolute_outputs_path
+                if hasattr(wgp, 'audio_save_path'):
+                    wgp.audio_save_path = absolute_outputs_path
+
+                orchestrator_logger.info(
+                    f"[OUTPUT_DIR] Set output paths: save_path={wgp.save_path}, "
+                    f"image_save_path={wgp.image_save_path}"
                 )
-                orchestrator_logger.debug("wgp.apply_changes() completed successfully")
             except Exception as e:
-                orchestrator_logger.error(f"❌ FATAL: wgp.apply_changes() failed: {e}\n{traceback.format_exc()}")
+                orchestrator_logger.error(f"Failed to apply headless config overrides: {e}\n{traceback.format_exc()}")
                 raise RuntimeError(f"Failed to apply WGP defaults during orchestrator init: {e}") from e
 
-            # Verify directory after apply_changes (it may have done file operations)
-            _verify_wgp_directory(orchestrator_logger, "after apply_changes()")
-
-            # CRITICAL: apply_changes() reads from server_config dict back into module-level vars
-            # So we must set our output paths AGAIN after apply_changes() completes!
-            orchestrator_logger.info(f"[OUTPUT_DIR] Reapplying output directory configuration after apply_changes()...")
-            wgp.server_config['save_path'] = absolute_outputs_path
-            wgp.server_config['image_save_path'] = absolute_outputs_path
-            wgp.save_path = absolute_outputs_path
-            wgp.image_save_path = absolute_outputs_path
-            orchestrator_logger.info(f"[OUTPUT_DIR] Final check: dict={{save_path={wgp.server_config['save_path']}, image_save_path={wgp.server_config['image_save_path']}}}, module={{save_path={wgp.save_path}, image_save_path={wgp.image_save_path}}}")
+            _verify_wgp_directory(orchestrator_logger, "after headless config overrides")
 
         else:
             # Provide stubbed helpers for smoke mode
