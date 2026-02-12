@@ -15,10 +15,7 @@ import uuid
 from source.core.log import headless_logger
 from source.task_handlers.worker.worker_utils import make_task_dprint, log_ram_usage
 from source.task_handlers.tasks.task_conversion import db_task_to_generation_task, parse_phase_config
-from source.core.params.phase_config import apply_phase_config_patch
-from source.core.params.lora import LoRAConfig
 from source.core.params.structure_guidance import StructureGuidanceConfig
-from source.models.lora.lora_utils import _download_lora_from_url
 
 # Import task handlers
 # These imports should be available from the environment where this module is used
@@ -527,32 +524,20 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
 
         if segment_loras:
             dprint_func(f"[PER_SEGMENT_LORAS] Task {task_id}: Using segment-specific LoRAs ({len(segment_loras)} LoRAs)")
-            # segment_loras format: [{"id": "...", "path": "...", "strength": 0.8, "name": "..."}, ...]
-            # Convert to LoRAConfig format
-            segment_lora_config = LoRAConfig.from_segment_loras(segment_loras, task_id=task_id)
-
-            # Download any pending LoRAs
-            if segment_lora_config.has_pending_downloads():
-                for url in segment_lora_config.get_pending_downloads().keys():
-                    if url:
-                        local_filename = _download_lora_from_url(
-                            url=url,
-                            task_id=task_id,
-                            dprint=dprint_func,
-                            model_type=model_name,
-                        )
-                        segment_lora_config.mark_downloaded(url, local_filename)
-
-            # Convert to WGP format
-            wgp_lora = segment_lora_config.to_wgp_format()
-            if wgp_lora["activated_loras"]:
-                dprint_func(f"[PER_SEGMENT_LORAS] Task {task_id}: Resolved {len(wgp_lora['activated_loras'])} segment-specific LoRAs:")
-                for i, lora_path in enumerate(wgp_lora["activated_loras"]):
-                    dprint_func(f"[PER_SEGMENT_LORAS] Task {task_id}:   [{i}] '{lora_path}'")
-
-                generation_params["activated_loras"] = wgp_lora["activated_loras"]
-                generation_params["loras_multipliers"] = wgp_lora["loras_multipliers"]
-                headless_logger.info(f"Resolved {len(wgp_lora['activated_loras'])} segment-specific LoRAs", task_id=task_id)
+            # Pass through URLs/filenames without downloading - convert_to_wgp_task_impl() handles resolution
+            segment_lora_config = True  # Flag to skip phase_config LoRAs below
+            activated = []
+            mults = []
+            for lora_dict in segment_loras:
+                path = lora_dict.get("path", "")
+                strength = lora_dict.get("strength", 1.0)
+                if path:
+                    activated.append(path)
+                    mults.append(str(strength))
+            if activated:
+                generation_params["activated_loras"] = activated
+                generation_params["loras_multipliers"] = " ".join(mults)
+                headless_logger.info(f"Set {len(activated)} segment-specific LoRAs (download deferred)", task_id=task_id)
         else:
             dprint_func(f"[PER_SEGMENT_LORAS] Task {task_id}: No segment-specific LoRAs - will use phase_config/shot-level LoRAs if present")
 
@@ -603,57 +588,23 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
 
                 # Copy LoRA params from phase_config ONLY if no segment-specific LoRAs
                 # (segment_loras takes precedence over phase_config LoRAs)
+                # Pass through URLs without downloading - convert_to_wgp_task_impl() handles resolution
                 if not segment_lora_config:
-                    for key in ["lora_names", "lora_multipliers"]:
-                        if key in parsed_phase_config and parsed_phase_config[key] is not None:
-                            generation_params[key] = parsed_phase_config[key]
-
                     if "lora_names" in parsed_phase_config:
                         generation_params["activated_loras"] = parsed_phase_config["lora_names"]
                     if "lora_multipliers" in parsed_phase_config:
                         generation_params["loras_multipliers"] = " ".join(str(m) for m in parsed_phase_config["lora_multipliers"])
+                    lora_count = len(parsed_phase_config.get("lora_names", []))
+                    if lora_count:
+                        headless_logger.info(f"Set {lora_count} phase_config LoRAs (download deferred)", task_id=task_id)
                 else:
                     dprint_func(f"[PER_SEGMENT_PHASE_CONFIG] Task {task_id}: Skipping phase_config LoRAs (segment-specific LoRAs take precedence)")
 
-                # CRITICAL: Run LoRA resolution after phase_config parsing
-                # phase_config extracts LoRA URLs which need to be downloaded and resolved to absolute paths
-                # NOTE: Only pass lora_names/loras_multipliers, NOT additional_loras (which is passed through but not processed)
-                # IMPORTANT: Skip if segment_loras was already applied (per-segment override takes precedence)
-                if not segment_lora_config and any(key in generation_params for key in ["activated_loras", "loras_multipliers"]):
-                    lora_params_for_config = {
-                        k: v for k, v in generation_params.items()
-                        if k in ["activated_loras", "loras_multipliers", "lora_names", "lora_multipliers"]
-                    }
-                    lora_config = LoRAConfig.from_params(lora_params_for_config, task_id=task_id)
-
-                    # Download any pending LoRAs
-                    if lora_config.has_pending_downloads():
-                        for url in lora_config.get_pending_downloads().keys():
-                            if url:
-                                local_filename = _download_lora_from_url(
-                                    url=url,
-                                    task_id=task_id,
-                                    dprint=dprint_func,
-                                    model_type=model_name,
-                                )
-                                lora_config.mark_downloaded(url, local_filename)
-
-                    # Convert to WGP format
-                    wgp_lora = lora_config.to_wgp_format()
-                    if wgp_lora["activated_loras"]:
-                        # DEBUG: Log exactly what LoRAConfig resolved
-                        dprint_func(f"[LORA_CONFIG_OUTPUT] Task {task_id}: Resolved {len(wgp_lora['activated_loras'])} LoRAs:")
-                        for i, lora_path in enumerate(wgp_lora["activated_loras"]):
-                            dprint_func(f"[LORA_CONFIG_OUTPUT] Task {task_id}:   [{i}] '{lora_path}'")
-
-                        generation_params["activated_loras"] = wgp_lora["activated_loras"]
-                        generation_params["loras_multipliers"] = wgp_lora["loras_multipliers"]
-                        headless_logger.info(f"Resolved {len(wgp_lora['activated_loras'])} LoRAs from phase_config", task_id=task_id)
-                elif segment_lora_config:
-                    dprint_func(f"[LORA_CONFIG_OUTPUT] Task {task_id}: Skipping phase_config LoRAs (using segment-specific LoRAs instead)")
-                
+                # Pass phase_config patch data through to worker_thread.py for proper apply+restore lifecycle
+                # (instead of applying directly here where it would never be cleaned up)
                 if "_patch_config" in parsed_phase_config:
-                    apply_phase_config_patch(parsed_phase_config, model_name, task_id)
+                    generation_params["_parsed_phase_config"] = parsed_phase_config
+                    generation_params["_phase_config_model_name"] = model_name
 
             except (ValueError, KeyError, TypeError) as e:
                 raise ValueError(f"Task {task_id}: Invalid phase_config: {e}")
@@ -782,40 +733,24 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                     generation_params[key] = segment_params[key]
                     dprint_func(f"[SVI_PAYLOAD] Task {task_id}: Set {key}={segment_params[key]}")
             
-            # Merge SVI LoRAs with existing LoRAs using direct arrays (not additional_loras dict)
-            from source.task_handlers.travel.svi_config import get_svi_lora_arrays
-            
-            # Get existing LoRA arrays from generation_params
-            existing_urls = generation_params.get("activated_loras", [])
-            existing_mults_raw = generation_params.get("loras_multipliers", "")
-            # Parse multipliers: could be space-separated string or list
-            if isinstance(existing_mults_raw, str):
-                existing_mults = existing_mults_raw.split() if existing_mults_raw else []
-            else:
-                existing_mults = list(existing_mults_raw) if existing_mults_raw else []
-            
+            # Merge SVI LoRAs with existing LoRAs
+            from source.task_handlers.travel.svi_config import merge_svi_into_generation_params
+
             svi_strength = _get_param("svi_strength", segment_params, orchestrator_details)
             svi_strength_1 = _get_param("svi_strength_1", segment_params, orchestrator_details)
             svi_strength_2 = _get_param("svi_strength_2", segment_params, orchestrator_details)
-            
-            merged_urls, merged_mults = get_svi_lora_arrays(
-                existing_urls=existing_urls,
-                existing_multipliers=existing_mults,
+
+            merge_svi_into_generation_params(
+                generation_params,
                 svi_strength=svi_strength,
                 svi_strength_1=svi_strength_1,
-                svi_strength_2=svi_strength_2
+                svi_strength_2=svi_strength_2,
             )
-            
-            # Set directly as WGP-ready format
-            generation_params["activated_loras"] = merged_urls
-            generation_params["loras_multipliers"] = " ".join(merged_mults)
-            
-            if svi_strength_1 is not None or svi_strength_2 is not None:
-                dprint_func(f"[SVI_PAYLOAD] Task {task_id}: Merged SVI LoRAs with svi_strength_1={svi_strength_1}, svi_strength_2={svi_strength_2}")
-            elif svi_strength is not None:
-                dprint_func(f"[SVI_PAYLOAD] Task {task_id}: Merged SVI LoRAs with svi_strength={svi_strength}")
-            else:
-                dprint_func(f"[SVI_PAYLOAD] Task {task_id}: Merged {len(merged_urls)} SVI LoRAs into activated_loras")
+
+            dprint_func(
+                f"[SVI_PAYLOAD] Task {task_id}: Merged SVI LoRAs "
+                f"(svi_strength={svi_strength}, svi_strength_1={svi_strength_1}, svi_strength_2={svi_strength_2})"
+            )
         
         # =============================================================================
         # UNI3C MODE: Motion guidance via Uni3C ControlNet

@@ -18,7 +18,7 @@ from ...utils import (
 )
 from ...core.params.structure_guidance import StructureGuidanceConfig
 
-from .svi_config import SVI_DEFAULT_PARAMS, SVI_STITCH_OVERLAP, get_svi_lora_arrays
+from .svi_config import SVI_DEFAULT_PARAMS, SVI_STITCH_OVERLAP
 from .debug_utils import log_ram_usage
 
 # Default seed used when no seed_base is provided in the orchestrator payload
@@ -1705,50 +1705,21 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             # Only subsequent segments use SVI end frame chaining from the previous segment's output.
             if use_svi and idx > 0:
                 dprint(f"[SVI_CONFIG] Segment {idx}: Configuring SVI mode")
-                
-                # Merge SVI LoRAs with existing LoRAs using direct arrays (not additional_loras dict)
-                existing_urls = segment_payload.get("lora_names", [])
-                existing_mults = segment_payload.get("lora_multipliers", [])
-                
-                svi_strength = orchestrator_payload.get("svi_strength")
-                svi_strength_1 = orchestrator_payload.get("svi_strength_1")
-                svi_strength_2 = orchestrator_payload.get("svi_strength_2")
-                
-                merged_urls, merged_mults = get_svi_lora_arrays(
-                    existing_urls=existing_urls,
-                    existing_multipliers=existing_mults,
-                    svi_strength=svi_strength,
-                    svi_strength_1=svi_strength_1,
-                    svi_strength_2=svi_strength_2
-                )
-                
-                # Set directly as arrays for downstream processing
-                segment_payload["lora_names"] = merged_urls
-                segment_payload["lora_multipliers"] = merged_mults
-                
-                if svi_strength_1 is not None or svi_strength_2 is not None:
-                    dprint(f"[SVI_CONFIG] Segment {idx}: Added SVI LoRAs with svi_strength_1={svi_strength_1}, svi_strength_2={svi_strength_2}")
-                elif svi_strength is not None:
-                    dprint(f"[SVI_CONFIG] Segment {idx}: Added SVI LoRAs with svi_strength={svi_strength}")
-                else:
-                    dprint(f"[SVI_CONFIG] Segment {idx}: Added {len(merged_urls)} SVI LoRAs to lora_names/lora_multipliers")
-                
+
                 # Force SVI generation parameters (SVI LoRAs are 2-phase and expect these defaults)
                 for key, value in SVI_DEFAULT_PARAMS.items():
                     prev_val = segment_payload.get(key, None)
                     if prev_val != value:
                         segment_payload[key] = value
                         dprint(f"[SVI_CONFIG] Segment {idx}: Set {key}={value} (was {prev_val})")
-                
+
                 # SVI requires svi2pro=True for encoding mode
                 segment_payload["svi2pro"] = True
-                
+
                 # SVI requires video_prompt_type="I" to enable image_refs
                 segment_payload["video_prompt_type"] = "I"
-                
+
                 # For SVI, use smaller overlap since end/start frames should mostly match
-                # - overlap_with_next applies to current segment when stitching into the next one
-                # - overlap_from_previous applies to the NEXT segment when stitching back into this one
                 segment_payload["frame_overlap_with_next"] = SVI_STITCH_OVERLAP if idx < (num_segments - 1) else 0
                 segment_payload["frame_overlap_from_previous"] = SVI_STITCH_OVERLAP if idx > 0 else 0
                 dprint(
@@ -1761,10 +1732,6 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 segment_payload["use_svi"] = False
                 segment_payload["svi2pro"] = False
                 dprint(f"[SVI_CONFIG] Segment {idx}: First segment - SVI disabled (use_svi=False, svi2pro=False)")
-            
-            # Log LoRA configuration for debugging
-            if segment_payload.get("lora_names"):
-                dprint(f"Orchestrator: Segment {idx} has {len(segment_payload['lora_names'])} LoRAs: {segment_payload['lora_names']}")
 
             # [DEEP_DEBUG] Log segment payload values AFTER creation
             dprint(f"[ORCHESTRATOR_DEBUG] {orchestrator_task_id_str}: SEGMENT {idx} PAYLOAD CREATED")

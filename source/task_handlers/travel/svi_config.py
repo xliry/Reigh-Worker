@@ -1,5 +1,7 @@
 """SVI (Stable Video Infinity) Configuration for End Frame Chaining."""
 
+from typing import Any, Dict, Optional
+
 from source.core.constants import BYTES_PER_MB, MB_PER_GB, BYTES_PER_GB
 
 # =============================================================================
@@ -109,3 +111,40 @@ def get_svi_lora_arrays(
         result_mults.append(scaled_mult)
 
     return result_urls, result_mults
+
+
+def merge_svi_into_generation_params(
+    generation_params: Dict[str, Any],
+    svi_strength: Optional[float] = None,
+    svi_strength_1: Optional[float] = None,
+    svi_strength_2: Optional[float] = None,
+) -> None:
+    """
+    Merge SVI LoRAs into generation_params in-place.
+
+    Parses existing activated_loras/loras_multipliers from generation_params,
+    appends SVI LoRA URLs with scaled multipliers, and writes back.
+
+    Args:
+        generation_params: Dict to update with merged LoRA arrays.
+        svi_strength: Global multiplier for all SVI LoRAs.
+        svi_strength_1: Multiplier for high-noise (phase 1) LoRAs.
+        svi_strength_2: Multiplier for low-noise (phase 2) LoRAs.
+    """
+    existing_urls = generation_params.get("activated_loras", [])
+    existing_mults_raw = generation_params.get("loras_multipliers", "")
+    if isinstance(existing_mults_raw, str):
+        existing_mults = existing_mults_raw.split() if existing_mults_raw else []
+    else:
+        existing_mults = list(existing_mults_raw) if existing_mults_raw else []
+
+    merged_urls, merged_mults = get_svi_lora_arrays(
+        existing_urls=existing_urls,
+        existing_multipliers=existing_mults,
+        svi_strength=svi_strength,
+        svi_strength_1=svi_strength_1,
+        svi_strength_2=svi_strength_2,
+    )
+
+    generation_params["activated_loras"] = merged_urls
+    generation_params["loras_multipliers"] = " ".join(merged_mults)

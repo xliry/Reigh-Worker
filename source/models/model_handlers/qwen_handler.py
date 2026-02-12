@@ -131,13 +131,13 @@ class QwenHandler:
         if target_path.exists():
             self._log_debug(f"LoRA already present: {target_path}")
             return target_path.resolve()
-        
+
         self._log_info(f"Downloading LoRA '{filename}' from '{repo_id}'")
         try:
             dl_path = hf_hub_download(
-                repo_id=repo_id, 
-                filename=filename, 
-                revision="main", 
+                repo_id=repo_id,
+                filename=filename,
+                revision="main",
                 local_dir=str(self.qwen_lora_dir)
             )
             actual_path = Path(dl_path)
@@ -148,6 +148,71 @@ class QwenHandler:
         except (OSError, ValueError, RuntimeError) as e:
             self._log_warning(f"LoRA download failed for {filename}: {e}")
             return None
+
+    def _ensure_lora_lists(self, generation_params: Dict[str, Any]):
+        """Ensure lora_names and lora_multipliers exist as lists."""
+        generation_params.setdefault("lora_names", [])
+        generation_params.setdefault("lora_multipliers", [])
+
+    def _add_lightning_lora(
+        self,
+        db_task_params: Dict[str, Any],
+        generation_params: Dict[str, Any],
+        lightning_fname: str = "Qwen-Image-Edit-Lightning-8steps-V1.0-bf16.safetensors",
+        lightning_repo: str = "lightx2v/Qwen-Image-Lightning",
+        default_phase1: float = 0.85,
+        default_phase2: float = 0.0,
+    ):
+        """Download Lightning LoRA if needed and add to generation params with phase support."""
+        self._ensure_lora_lists(generation_params)
+
+        if not (self.qwen_lora_dir / lightning_fname).exists():
+            self._download_lora_if_missing(lightning_repo, lightning_fname)
+
+        if lightning_fname in generation_params["lora_names"]:
+            return
+
+        phase1 = float(db_task_params.get("lightning_lora_strength_phase_1", default_phase1))
+        phase2 = float(db_task_params.get("lightning_lora_strength_phase_2", default_phase2))
+
+        generation_params["lora_names"].append(lightning_fname)
+        if db_task_params.get("hires_scale") is not None:
+            generation_params["lora_multipliers"].append(f"{phase1};{phase2}")
+            self._log_info(f"Added Lightning LoRA with strength Phase1={phase1}, Phase2={phase2}")
+        else:
+            generation_params["lora_multipliers"].append(phase1)
+            self._log_info(f"Added Lightning LoRA with strength {phase1}")
+
+    def _add_lightning_lora_simple(
+        self,
+        db_task_params: Dict[str, Any],
+        generation_params: Dict[str, Any],
+        lightning_fname: str = "Qwen-Image-Edit-Lightning-8steps-V1.0-bf16.safetensors",
+        lightning_repo: str = "lightx2v/Qwen-Image-Lightning",
+        strength_param: str = "lightning_lora_strength",
+        default_strength: float = 0.45,
+    ):
+        """Download Lightning LoRA if needed and add with a single strength value (no phases)."""
+        self._ensure_lora_lists(generation_params)
+
+        if not (self.qwen_lora_dir / lightning_fname).exists():
+            self._download_lora_if_missing(lightning_repo, lightning_fname)
+
+        if lightning_fname in generation_params["lora_names"]:
+            return
+
+        strength = float(db_task_params.get(strength_param, default_strength))
+        generation_params["lora_names"].append(lightning_fname)
+        generation_params["lora_multipliers"].append(strength)
+        self._log_info(f"Added Lightning LoRA '{lightning_fname}' @ {strength}")
+
+    def _add_task_lora(self, generation_params: Dict[str, Any], repo_id: str, filename: str, multiplier: float = 1.0):
+        """Download and add a task-specific LoRA."""
+        self._download_lora_if_missing(repo_id, filename)
+        self._ensure_lora_lists(generation_params)
+        if filename not in generation_params["lora_names"]:
+            generation_params["lora_names"].append(filename)
+            generation_params["lora_multipliers"].append(multiplier)
 
     def handle_qwen_image_edit(self, db_task_params: Dict[str, Any], generation_params: Dict[str, Any]):
         """Handle qwen_image_edit task type."""
@@ -183,33 +248,7 @@ class QwenHandler:
         else:
             generation_params["system_prompt"] = "You are a professional image editor. Analyze the input image carefully, then apply the requested modifications precisely while maintaining visual coherence and image quality."
 
-        # Ensure Lightning LoRA
-        lightning_fname = "Qwen-Image-Edit-Lightning-8steps-V1.0-bf16.safetensors"
-        selected_lightning_path = self.qwen_lora_dir / lightning_fname
-        if not selected_lightning_path.exists():
-            selected_lightning_path = self._download_lora_if_missing("lightx2v/Qwen-Image-Lightning", lightning_fname)
-        
-        if selected_lightning_path:
-            if "lora_names" not in generation_params:
-                generation_params["lora_names"] = []
-            if "lora_multipliers" not in generation_params:
-                generation_params["lora_multipliers"] = []
-
-            if selected_lightning_path.name not in generation_params["lora_names"]:
-                # Get Lightning LoRA strength per phase from task params or use defaults
-                lightning_phase1 = float(db_task_params.get("lightning_lora_strength_phase_1", 0.85))
-                lightning_phase2 = float(db_task_params.get("lightning_lora_strength_phase_2", 0.0))
-
-                generation_params["lora_names"].append(selected_lightning_path.name)
-
-                # Only use phase format if hires is enabled (2-pass workflow)
-                # For single-pass, use only pass 1 value to avoid WGP parsing error
-                if db_task_params.get("hires_scale") is not None:
-                    generation_params["lora_multipliers"].append(f"{lightning_phase1};{lightning_phase2}")
-                    self._log_info(f"Added Lightning LoRA with strength Phase1={lightning_phase1}, Phase2={lightning_phase2}")
-                else:
-                    generation_params["lora_multipliers"].append(lightning_phase1)
-                    self._log_info(f"Added Lightning LoRA with strength {lightning_phase1}")
+        self._add_lightning_lora(db_task_params, generation_params, default_phase1=0.85, default_phase2=0.0)
 
         # Optional hires fix - can be enabled on any qwen_image_edit task
         self._maybe_add_hires_config(db_task_params, generation_params)
@@ -332,34 +371,8 @@ class QwenHandler:
         else:
             generation_params["system_prompt"] = default_system_prompt
 
-        # Download LoRAs
-        self._download_lora_if_missing(task_lora_repo, task_lora_fname)
-
-        lightning_fname = "Qwen-Image-Edit-Lightning-8steps-V1.0-bf16.safetensors"
-        if not (self.qwen_lora_dir / lightning_fname).exists():
-            self._download_lora_if_missing("lightx2v/Qwen-Image-Lightning", lightning_fname)
-        selected_lightning = lightning_fname
-
-        if "lora_names" not in generation_params:
-            generation_params["lora_names"] = []
-        if "lora_multipliers" not in generation_params:
-            generation_params["lora_multipliers"] = []
-
-        if selected_lightning not in generation_params["lora_names"]:
-            lightning_phase1 = float(db_task_params.get("lightning_lora_strength_phase_1", 0.75))
-            lightning_phase2 = float(db_task_params.get("lightning_lora_strength_phase_2", 0.0))
-
-            generation_params["lora_names"].append(selected_lightning)
-            if db_task_params.get("hires_scale") is not None:
-                generation_params["lora_multipliers"].append(f"{lightning_phase1};{lightning_phase2}")
-                self._log_info(f"Added Lightning LoRA with strength Phase1={lightning_phase1}, Phase2={lightning_phase2}")
-            else:
-                generation_params["lora_multipliers"].append(lightning_phase1)
-                self._log_info(f"Added Lightning LoRA with strength {lightning_phase1}")
-
-        if task_lora_fname not in generation_params["lora_names"]:
-            generation_params["lora_names"].append(task_lora_fname)
-            generation_params["lora_multipliers"].append(1.0)
+        self._add_lightning_lora(db_task_params, generation_params, default_phase1=0.75, default_phase2=0.0)
+        self._add_task_lora(generation_params, task_lora_repo, task_lora_fname)
 
         # Optional hires fix
         self._maybe_add_hires_config(db_task_params, generation_params)
@@ -459,52 +472,20 @@ class QwenHandler:
             else:
                 generation_params["system_prompt"] = "You are an expert at image-to-image generation."
 
-        # Download LoRAs
-        lightning_fname = "Qwen-Image-Edit-Lightning-8steps-V1.0-bf16.safetensors"
-        if not (self.qwen_lora_dir / lightning_fname).exists():
-            self._download_lora_if_missing("lightx2v/Qwen-Image-Lightning", lightning_fname)
+        # Lightning LoRA
+        self._add_lightning_lora(db_task_params, generation_params, default_phase1=0.85, default_phase2=0.0)
 
+        # Conditional style/subject/scene LoRAs
         style_fname = "style_transfer_qwen_edit_2_000011250.safetensors"
-        if style_strength > 0.0:
-            self._download_lora_if_missing("peteromallet/ad_motion_loras", style_fname)
-
         subject_fname = "in_subject_qwen_edit_2_000006750.safetensors"
-        if subject_strength > 0.0:
-            self._download_lora_if_missing("peteromallet/mystery_models", subject_fname)
-
         scene_fname = "in_scene_different_object_000010500.safetensors"
+
+        if style_strength > 0.0:
+            self._add_task_lora(generation_params, "peteromallet/ad_motion_loras", style_fname, style_strength)
+        if subject_strength > 0.0:
+            self._add_task_lora(generation_params, "peteromallet/mystery_models", subject_fname, subject_strength)
         if scene_strength > 0.0:
-            self._download_lora_if_missing("peteromallet/random_junk", scene_fname)
-
-        # Build LoRA lists
-        if "lora_names" not in generation_params:
-            generation_params["lora_names"] = []
-        if "lora_multipliers" not in generation_params:
-            generation_params["lora_multipliers"] = []
-
-        if lightning_fname not in generation_params["lora_names"]:
-            # Get Lightning LoRA strength per phase from task params or use defaults
-            lightning_phase1 = float(db_task_params.get("lightning_lora_strength_phase_1", 0.85))
-            lightning_phase2 = float(db_task_params.get("lightning_lora_strength_phase_2", 0.0))
-
-            generation_params["lora_names"].append(lightning_fname)
-            # Only use phase format if hires is enabled (2-pass workflow)
-            if db_task_params.get("hires_scale") is not None:
-                generation_params["lora_multipliers"].append(f"{lightning_phase1};{lightning_phase2}")
-            else:
-                generation_params["lora_multipliers"].append(lightning_phase1)
-
-        if style_strength > 0.0 and style_fname not in generation_params["lora_names"]:
-            generation_params["lora_names"].append(style_fname)
-            generation_params["lora_multipliers"].append(style_strength)
-
-        if subject_strength > 0.0 and subject_fname not in generation_params["lora_names"]:
-            generation_params["lora_names"].append(subject_fname)
-            generation_params["lora_multipliers"].append(subject_strength)
-
-        if scene_strength > 0.0 and scene_fname not in generation_params["lora_names"]:
-            generation_params["lora_names"].append(scene_fname)
-            generation_params["lora_multipliers"].append(scene_strength)
+            self._add_task_lora(generation_params, "peteromallet/random_junk", scene_fname, scene_strength)
 
         # Optional hires fix
         self._maybe_add_hires_config(db_task_params, generation_params)
@@ -566,25 +547,8 @@ class QwenHandler:
         else:
             generation_params["system_prompt"] = "You are a professional image generator. Create high-quality, detailed images based on the description."
         
-        # Lightning LoRA setup
-        lightning_fname = "Qwen-Image-Edit-Lightning-8steps-V1.0-bf16.safetensors"
-        if not (self.qwen_lora_dir / lightning_fname).exists():
-            self._download_lora_if_missing("lightx2v/Qwen-Image-Lightning", lightning_fname)
-        selected_lightning = lightning_fname
-        
-        # LoRA strength from task params or default 0.45 (ComfyUI default)
-        lora_strength = float(db_task_params.get("lightning_lora_strength", 0.45))
-        
-        if "lora_names" not in generation_params:
-            generation_params["lora_names"] = []
-        if "lora_multipliers" not in generation_params:
-            generation_params["lora_multipliers"] = []
-        
-        if selected_lightning not in generation_params["lora_names"]:
-            generation_params["lora_names"].append(selected_lightning)
-            generation_params["lora_multipliers"].append(lora_strength)
-            self._log_info(f"Added Lightning LoRA '{selected_lightning}' @ {lora_strength}")
-        
+        self._add_lightning_lora_simple(db_task_params, generation_params, default_strength=0.45)
+
         # Log final config
         base_w, base_h = map(int, resolution_str.split("x"))
         final_w = int(base_w * hires_config["scale"])
@@ -622,31 +586,12 @@ class QwenHandler:
         else:
             generation_params["system_prompt"] = "You are a professional image generator. Create high-quality, detailed images based on the description provided."
 
-        # Lightning LoRA V2.0 - 4-step version for base Qwen Image
-        lightning_fname = "Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors"
-        selected_lightning_path = self.qwen_lora_dir / lightning_fname
-        if not selected_lightning_path.exists():
-            selected_lightning_path = self._download_lora_if_missing("lightx2v/Qwen-Image-Lightning", lightning_fname)
-
-        if selected_lightning_path:
-            if "lora_names" not in generation_params:
-                generation_params["lora_names"] = []
-            if "lora_multipliers" not in generation_params:
-                generation_params["lora_multipliers"] = []
-
-            if selected_lightning_path.name not in generation_params["lora_names"]:
-                # Get Lightning LoRA strength per phase from task params or use defaults
-                lightning_phase1 = float(db_task_params.get("lightning_lora_strength_phase_1", 1.0))
-                lightning_phase2 = float(db_task_params.get("lightning_lora_strength_phase_2", 1.0))
-
-                generation_params["lora_names"].append(selected_lightning_path.name)
-                # Only use phase format if hires is enabled (2-pass workflow)
-                if db_task_params.get("hires_scale") is not None:
-                    generation_params["lora_multipliers"].append(f"{lightning_phase1};{lightning_phase2}")
-                    self._log_info(f"Added Lightning LoRA with strength Phase1={lightning_phase1}, Phase2={lightning_phase2}")
-                else:
-                    generation_params["lora_multipliers"].append(lightning_phase1)
-                    self._log_info(f"Added Lightning LoRA with strength {lightning_phase1}")
+        self._add_lightning_lora(
+            db_task_params, generation_params,
+            lightning_fname="Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors",
+            lightning_repo="lightx2v/Qwen-Image-Lightning",
+            default_phase1=1.0, default_phase2=1.0,
+        )
 
         # Handle additional LoRAs from task params
         self._apply_additional_loras(db_task_params, generation_params)
@@ -696,31 +641,12 @@ class QwenHandler:
         else:
             generation_params["system_prompt"] = "You are an expert image generator specializing in photorealistic images with accurate text rendering. Pay careful attention to any text, typography, or lettering in the prompt and render it clearly and legibly."
 
-        # Lightning LoRA - 2512-specific 4-step version
-        lightning_fname = "Qwen-Image-2512-Lightning-4steps-V1.0-bf16.safetensors"
-        selected_lightning_path = self.qwen_lora_dir / lightning_fname
-        if not selected_lightning_path.exists():
-            selected_lightning_path = self._download_lora_if_missing("lightx2v/Qwen-Image-2512-Lightning", lightning_fname)
-
-        if selected_lightning_path:
-            if "lora_names" not in generation_params:
-                generation_params["lora_names"] = []
-            if "lora_multipliers" not in generation_params:
-                generation_params["lora_multipliers"] = []
-
-            if selected_lightning_path.name not in generation_params["lora_names"]:
-                # Get Lightning LoRA strength per phase from task params or use defaults
-                lightning_phase1 = float(db_task_params.get("lightning_lora_strength_phase_1", 1.0))
-                lightning_phase2 = float(db_task_params.get("lightning_lora_strength_phase_2", 1.0))
-
-                generation_params["lora_names"].append(selected_lightning_path.name)
-                # Only use phase format if hires is enabled (2-pass workflow)
-                if db_task_params.get("hires_scale") is not None:
-                    generation_params["lora_multipliers"].append(f"{lightning_phase1};{lightning_phase2}")
-                    self._log_info(f"Added Lightning LoRA with strength Phase1={lightning_phase1}, Phase2={lightning_phase2}")
-                else:
-                    generation_params["lora_multipliers"].append(lightning_phase1)
-                    self._log_info(f"Added Lightning LoRA with strength {lightning_phase1}")
+        self._add_lightning_lora(
+            db_task_params, generation_params,
+            lightning_fname="Qwen-Image-2512-Lightning-4steps-V1.0-bf16.safetensors",
+            lightning_repo="lightx2v/Qwen-Image-2512-Lightning",
+            default_phase1=1.0, default_phase2=1.0,
+        )
 
         # Handle additional LoRAs
         self._apply_additional_loras(db_task_params, generation_params)
@@ -761,22 +687,7 @@ class QwenHandler:
         else:
             generation_params["system_prompt"] = "Generate an image based on the description."
 
-        # Lightning LoRA at full strength for turbo mode
-        lightning_fname = "Qwen-Image-Edit-Lightning-8steps-V1.0-bf16.safetensors"
-        if not (self.qwen_lora_dir / lightning_fname).exists():
-            self._download_lora_if_missing("lightx2v/Qwen-Image-Lightning", lightning_fname)
-
-        # Full strength Lightning for maximum speed
-        lora_strength = float(db_task_params.get("lightning_lora_strength", 1.0))
-
-        if "lora_names" not in generation_params:
-            generation_params["lora_names"] = []
-        if "lora_multipliers" not in generation_params:
-            generation_params["lora_multipliers"] = []
-
-        if lightning_fname not in generation_params["lora_names"]:
-            generation_params["lora_names"].append(lightning_fname)
-            generation_params["lora_multipliers"].append(lora_strength)
+        self._add_lightning_lora_simple(db_task_params, generation_params, default_strength=1.0)
 
         # Handle additional LoRAs
         self._apply_additional_loras(db_task_params, generation_params)
