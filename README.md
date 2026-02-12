@@ -66,6 +66,10 @@ python -m debug task <task_id>          # Investigate a task
 python -m debug tasks --status Failed   # List recent failures
 ```
 
+## Code Health
+
+<img src="scorecard.png" width="400">
+
 ## Project Structure
 
 See [STRUCTURE.md](STRUCTURE.md) for detailed project layout.
