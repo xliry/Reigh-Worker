@@ -122,7 +122,7 @@ def stitch_videos_with_crossfade(
     """
     Stitch multiple videos together with crossfade blending at boundaries.
 
-    This is a generalized version of the stitching logic from travel_between_images.py
+    This is a generalized version of the stitching logic from the travel handlers
     that can be used for any video concatenation with smooth crossfades.
 
     Args:

@@ -6,7 +6,7 @@ Claude (or other VLMs) can view these images to judge if Uni3C output matches
 the guide video's motion better than baseline.
 
 Usage:
-    from source.uni3c_validation import create_uni3c_comparison
+    from scripts.uni3c_validation import create_uni3c_comparison
     
     # Create comparison grid for VLM review
     comparison_path = create_uni3c_comparison(

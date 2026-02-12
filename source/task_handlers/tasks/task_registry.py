@@ -25,10 +25,12 @@ from source.models.lora.lora_utils import _download_lora_from_url
 from source.task_handlers.extract_frame import handle_extract_frame_task
 from source.task_handlers.rife_interpolate import handle_rife_interpolate_task
 from source.models.comfy.comfy_handler import handle_comfy_task
-from source.task_handlers import travel_between_images as tbi
+from source.task_handlers.travel import orchestrator as travel_orchestrator
+from source.task_handlers.travel.stitch import _handle_travel_stitch_task
 from source.task_handlers import magic_edit as me
-from source.task_handlers.join_clips import _handle_join_clips_task, _handle_join_final_stitch
-from source.task_handlers.join_clips_orchestrator import _handle_join_clips_orchestrator_task
+from source.task_handlers.join.generation import _handle_join_clips_task
+from source.task_handlers.join.final_stitch import _handle_join_final_stitch
+from source.task_handlers.join.orchestrator import _handle_join_clips_orchestrator_task
 from source.task_handlers.edit_video_orchestrator import _handle_edit_video_orchestrator_task
 from source.task_handlers.inpaint_frames import _handle_inpaint_frames_task
 from source.task_handlers.create_visualization import _handle_create_visualization_task
@@ -93,7 +95,7 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
     log_ram_usage("Segment via queue - start", task_id=task_id)
     
     try:
-        from source.task_handlers.travel_between_images import _handle_travel_chaining_after_wgp
+        from source.task_handlers.travel.chaining import _handle_travel_chaining_after_wgp
         
         segment_params = task_params_dict
         orchestrator_task_id_ref = segment_params.get("orchestrator_task_id_ref")
@@ -781,7 +783,7 @@ def _handle_travel_segment_via_queue(task_params_dict, main_output_dir_base: Pat
                     dprint_func(f"[SVI_PAYLOAD] Task {task_id}: Set {key}={segment_params[key]}")
             
             # Merge SVI LoRAs with existing LoRAs using direct arrays (not additional_loras dict)
-            from source.task_handlers.travel_between_images import get_svi_lora_arrays
+            from source.task_handlers.travel.svi_config import get_svi_lora_arrays
             
             # Get existing LoRA arrays from generation_params
             existing_urls = generation_params.get("activated_loras", [])
@@ -995,7 +997,7 @@ class TaskRegistry:
 
         # 2. Orchestrator & Specialized Handlers
         handlers = {
-            "travel_orchestrator": lambda: tbi._handle_travel_orchestrator_task(
+            "travel_orchestrator": lambda: travel_orchestrator._handle_travel_orchestrator_task(
                 task_params_from_db=params,
                 main_output_dir_base=context["main_output_dir_base"],
                 orchestrator_task_id_str=task_id,
@@ -1022,7 +1024,7 @@ class TaskRegistry:
                 dprint_func=dprint_func,
                 is_standalone=True
             ),
-            "travel_stitch": lambda: tbi._handle_travel_stitch_task(
+            "travel_stitch": lambda: _handle_travel_stitch_task(
                 task_params_from_db=params,
                 main_output_dir_base=context["main_output_dir_base"],
                 stitch_task_id_str=task_id,

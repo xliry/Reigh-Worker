@@ -1240,7 +1240,7 @@ def _handle_join_clips_task(
                         )
 
                         # Use generalized stitch function with frame-level crossfade blending
-                        # This matches the approach used in travel_between_images.py
+                        # This matches the approach used in the travel handlers
 
                         # === [FrameAlignmentIssue] FINAL STITCHING DIAGNOSTICS ===
                         dprint(f"{DEBUG_TAG} [JOIN_CLIPS] Task {task_id}: === Final Stitching Plan ===")

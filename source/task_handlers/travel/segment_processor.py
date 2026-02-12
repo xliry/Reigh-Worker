@@ -2,7 +2,7 @@
 Travel Segment Processor - Shared Logic for Travel Segment Generation
 
 This module contains the shared logic for processing travel segments that was previously
-duplicated between travel_between_images.py and worker.py. By extracting this common
+duplicated between the travel handlers and worker.py. By extracting this common
 functionality, we eliminate ~500 lines of code duplication and ensure consistent
 behavior across both execution paths.
 

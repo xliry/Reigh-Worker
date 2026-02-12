@@ -55,7 +55,7 @@ from source.task_handlers.worker.worker_utils import (
 )
 from source.task_handlers.worker.heartbeat_utils import start_heartbeat_guardian_process
 from source.task_handlers.tasks.task_registry import TaskRegistry
-from source.task_handlers import travel_between_images as tbi
+from source.task_handlers.travel.chaining import _handle_travel_chaining_after_wgp
 from source.models.lora.lora_utils import cleanup_legacy_lora_collisions
 from source.utils import prepare_output_path
 import shutil
@@ -155,7 +155,7 @@ def process_single_task(task_params_dict, main_output_dir_base: Path, task_type:
         chaining_result_path_override = None
 
         if task_params_dict.get("travel_chain_details"):
-            chain_success, chain_message, final_path_from_chaining = tbi._handle_travel_chaining_after_wgp(
+            chain_success, chain_message, final_path_from_chaining = _handle_travel_chaining_after_wgp(
                 wgp_task_params=task_params_dict,
                 actual_wgp_output_video_path=output_location_to_db,
                 image_download_dir=image_download_dir,
