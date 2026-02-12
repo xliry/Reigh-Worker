@@ -549,8 +549,8 @@ class TestDownloaderUtils:
         HF URLs sometimes come in as /blob/ links; we should normalize to /resolve/
         and pass the correct repo_id + filename to hf_hub_download.
         """
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / "loras").mkdir(parents=True, exist_ok=True)
+        loras_dir = tmp_path / "loras"
+        loras_dir.mkdir(parents=True, exist_ok=True)
 
         called = {}
 
@@ -567,8 +567,11 @@ class TestDownloaderUtils:
 
         # Patch the import used inside _download_lora_from_url
         import huggingface_hub
-
         monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_hf_hub_download)
+
+        # Mock path resolution so downloads go to tmp_path instead of real Wan2GP/
+        import source.models.lora.lora_paths as lora_paths
+        monkeypatch.setattr(lora_paths, "get_lora_dir_for_model", lambda model_type, wan_dir: loras_dir)
 
         url = "https://huggingface.co/org/repo/blob/main/loras/my_lora.safetensors"
         out = _download_lora_from_url(url, task_id="test")
@@ -585,7 +588,6 @@ class TestDownloaderUtils:
         When a collision-prone filename like high_noise_model.safetensors is used, we prefix the
         parent folder and remove any legacy generic file in standard lora dirs.
         """
-        monkeypatch.chdir(tmp_path)
         loras_dir = tmp_path / "loras"
         loras_dir.mkdir(parents=True, exist_ok=True)
 
@@ -598,9 +600,13 @@ class TestDownloaderUtils:
             Path(filename).write_bytes(b"new")
             return filename, None
 
-        # lora_utils imports urlretrieve directly: `from urllib.request import urlretrieve`
         import source.models.lora.lora_utils as lora_utils
         monkeypatch.setattr(lora_utils, "urlretrieve", fake_urlretrieve)
+
+        # Mock path resolution so downloads and cleanup use tmp_path
+        import source.models.lora.lora_paths as lora_paths
+        monkeypatch.setattr(lora_paths, "get_lora_dir_for_model", lambda model_type, wan_dir: loras_dir)
+        monkeypatch.setattr(lora_paths, "get_lora_search_dirs", lambda wan_dir, repo_root=None: [loras_dir])
 
         url = "https://example.com/Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors"
         out = _download_lora_from_url(url, task_id="test")

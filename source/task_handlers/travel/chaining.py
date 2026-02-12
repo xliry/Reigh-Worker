@@ -10,6 +10,7 @@ from datetime import datetime
 from ...core.log import travel_logger
 
 from ... import db_operations as db_ops
+from ...core.db import config as db_config
 from ...utils import (
     get_video_frame_count_and_fps,
     prepare_output_path,
@@ -202,7 +203,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                             trimmed_frames, trimmed_fps = get_video_frame_count_and_fps(trimmed_result)
                             debug_enabled = bool(
                                 full_orchestrator_payload.get("debug_mode_enabled", False)
-                                or db_ops.debug_mode
+                                or db_config.debug_mode
                             )
                             if debug_enabled:
                                 dprint(f"[SVI_GROUND_TRUTH] Seg {segment_idx_completed}: ✅ Trimmed video: {trimmed_frames} frames (expected: {frames_to_keep})")
@@ -435,12 +436,12 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
 def _cleanup_intermediate_video(orchestrator_payload, video_path: Path, segment_idx: int, stage: str, dprint):
     """Helper to cleanup intermediate video files during chaining."""
     # Delete intermediates **only** when every cleanup-bypass flag is false.
-    # That now includes the worker-server global debug flag (db_ops.debug_mode)
+    # That now includes the worker-server global debug flag (db_config.debug_mode)
     # so that running the server with --debug automatically preserves files.
     if (
         not orchestrator_payload.get("skip_cleanup_enabled", False)
         and not orchestrator_payload.get("debug_mode_enabled", False)
-        and not db_ops.debug_mode
+        and not db_config.debug_mode
         and video_path.exists()
     ):
         try:

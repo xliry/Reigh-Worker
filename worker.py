@@ -43,6 +43,7 @@ if wan2gp_path not in sys.path:
     sys.path.append(wan2gp_path)
 
 from source import db_operations as db_ops
+from source.core.db import config as db_config
 from source.task_handlers.worker.fatal_error_handler import FatalWorkerError, reset_fatal_error_counter, is_retryable_error
 from headless_model_management import HeadlessTaskQueue
 
@@ -268,14 +269,14 @@ def main():
         client_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or cli_args.supabase_anon_key or os.getenv("SUPABASE_ANON_KEY")
         if not client_key: raise ValueError("No Supabase key found")
         
-        db_ops.DB_TYPE = "supabase"
-        db_ops.PG_TABLE_NAME = os.getenv("POSTGRES_TABLE_NAME", "tasks")
-        db_ops.SUPABASE_URL = cli_args.supabase_url
-        db_ops.SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        db_ops.SUPABASE_VIDEO_BUCKET = os.getenv("SUPABASE_VIDEO_BUCKET", "image_uploads")
-        db_ops.SUPABASE_CLIENT = create_client(cli_args.supabase_url, client_key)
-        db_ops.SUPABASE_ACCESS_TOKEN = access_token
-        db_ops.debug_mode = debug_mode
+        db_config.DB_TYPE = "supabase"
+        db_config.PG_TABLE_NAME = os.getenv("POSTGRES_TABLE_NAME", "tasks")
+        db_config.SUPABASE_URL = cli_args.supabase_url
+        db_config.SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        db_config.SUPABASE_VIDEO_BUCKET = os.getenv("SUPABASE_VIDEO_BUCKET", "image_uploads")
+        db_config.SUPABASE_CLIENT = create_client(cli_args.supabase_url, client_key)
+        db_config.SUPABASE_ACCESS_TOKEN = access_token
+        db_config.debug_mode = debug_mode
 
         # Propagate to os.environ for code that can't import db_operations
         # (fatal_error_handler during crashes, headless_wgp notify_model_switch)

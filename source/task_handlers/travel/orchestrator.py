@@ -9,6 +9,7 @@ from datetime import datetime
 from ...core.log import travel_logger, safe_json_repr, safe_dict_repr
 
 from ... import db_operations as db_ops
+from ...core.db import config as db_config
 from ...utils import (
     parse_resolution,
     snap_resolution_to_model_grid,
@@ -1344,15 +1345,15 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
 
                     # Only call if we have SUPABASE configured and generated any new prompts
                     # Use SERVICE_KEY if available (admin), otherwise use ACCESS_TOKEN (user with ownership check)
-                    auth_token = db_ops.SUPABASE_SERVICE_KEY or db_ops.SUPABASE_ACCESS_TOKEN
-                    if db_ops.SUPABASE_URL and auth_token and len(complete_enhanced_prompts) > 0:
+                    auth_token = db_config.SUPABASE_SERVICE_KEY or db_config.SUPABASE_ACCESS_TOKEN
+                    if db_config.SUPABASE_URL and auth_token and len(complete_enhanced_prompts) > 0:
                         # Extract shot_id from orchestrator_payload
                         shot_id = orchestrator_payload.get("shot_id")
                         if not shot_id:
                             dprint(f"[VLM_BATCH] WARNING: No shot_id found in orchestrator_payload, skipping edge function call")
                         else:
                             # Call edge function to update shot_generations with enhanced prompts
-                            edge_url = f"{db_ops.SUPABASE_URL.rstrip('/')}/functions/v1/update-shot-pair-prompts"
+                            edge_url = f"{db_config.SUPABASE_URL.rstrip('/')}/functions/v1/update-shot-pair-prompts"
                             headers = {"Content-Type": "application/json"}
                             if auth_token:
                                 headers["Authorization"] = f"Bearer {auth_token}"
@@ -1375,7 +1376,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                                 prompt_preview = prompt[:60] if prompt else "EMPTY"
                                 dprint(f"[EDGE_FUNC_DEBUG]   [{i}] → {img_name} | '{prompt_preview}...'")
                             dprint(f"[EDGE_FUNC_DEBUG] WARNING: If images above don't match timeline_frame order in shot_generations, prompts will be misaligned!")
-                            dprint(f"[VLM_BATCH] Using auth token: {'SERVICE_KEY' if db_ops.SUPABASE_SERVICE_KEY else ('ACCESS_TOKEN' if db_ops.SUPABASE_ACCESS_TOKEN else 'None')}")
+                            dprint(f"[VLM_BATCH] Using auth token: {'SERVICE_KEY' if db_config.SUPABASE_SERVICE_KEY else ('ACCESS_TOKEN' if db_config.SUPABASE_ACCESS_TOKEN else 'None')}")
 
                             resp = httpx.post(edge_url, json=payload, headers=headers, timeout=30)
 
@@ -1386,7 +1387,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                             else:
                                 dprint(f"[VLM_BATCH] WARNING: Edge function call failed: {resp.status_code} - {resp.text}")
                     else:
-                        dprint(f"[VLM_BATCH] Skipping edge function call (has_auth_token={bool(auth_token)}, has_supabase_url={bool(db_ops.SUPABASE_URL)}, generated={len(complete_enhanced_prompts)} prompts)")
+                        dprint(f"[VLM_BATCH] Skipping edge function call (has_auth_token={bool(auth_token)}, has_supabase_url={bool(db_config.SUPABASE_URL)}, generated={len(complete_enhanced_prompts)} prompts)")
 
                 except (httpx.HTTPError, OSError, ValueError) as e_edge:
                     dprint(f"[VLM_BATCH] WARNING: Failed to call edge function: {e_edge}")

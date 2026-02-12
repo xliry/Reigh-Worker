@@ -174,7 +174,8 @@ def apply_qwen_inpainting_lora_patch() -> bool:
         _qwen_main.model_factory.get_loras_transformer = _patched_qwen_get_loras_transformer
         return True
 
-    except (ImportError, AttributeError) as e:
+    except (ImportError, AttributeError, AssertionError, RuntimeError) as e:
+        # AssertionError/RuntimeError: CUDA init fails on non-GPU machines during import
         model_logger.debug(f"[QWEN_LOAD] Failed to apply Qwen inpainting LoRA patch: {e}")
         return False
 

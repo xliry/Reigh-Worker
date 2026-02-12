@@ -92,7 +92,7 @@ def create_structure_motion_video(
         dprint(f"[STRUCTURE_MOTION_VIDEO] Encoding video to {output_path}")
 
         # Import video creation utilities
-        wan_dir = Path(__file__).parent.parent.parent / "Wan2GP"
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
         if str(wan_dir) not in sys.path:
             sys.path.insert(0, str(wan_dir))
 
@@ -231,7 +231,7 @@ def create_structure_guidance_video(
         dprint(f"[STRUCTURE_GUIDANCE_VIDEO] Encoding video to {output_path}")
 
         # Import video creation utilities
-        wan_dir = Path(__file__).parent.parent.parent / "Wan2GP"
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
         if str(wan_dir) not in sys.path:
             sys.path.insert(0, str(wan_dir))
 
@@ -729,7 +729,7 @@ def create_composite_guidance_video(
 
     # Try WGP's save_video first, fall back to cv2
     try:
-        wan_dir = Path(__file__).parent.parent.parent / "Wan2GP"
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
         if str(wan_dir) not in sys.path:
             sys.path.insert(0, str(wan_dir))
 
@@ -822,7 +822,7 @@ def create_trimmed_structure_video(
         dprint(f"[TRIMMED_STRUCTURE_VIDEO] Encoding video to {output_path}")
 
         # Import video creation utilities
-        wan_dir = Path(__file__).parent.parent.parent / "Wan2GP"
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
         if str(wan_dir) not in sys.path:
             sys.path.insert(0, str(wan_dir))
 

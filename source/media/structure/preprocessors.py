@@ -34,7 +34,7 @@ def get_structure_preprocessor(
 
     if structure_type == "flow":
         # Add Wan2GP to path for imports
-        wan_dir = Path(__file__).parent.parent.parent / "Wan2GP"
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
         if str(wan_dir) not in sys.path:
             sys.path.insert(0, str(wan_dir))
 
@@ -83,7 +83,7 @@ def get_structure_preprocessor(
         return process_with_motion_strength
 
     elif structure_type == "canny":
-        wan_dir = Path(__file__).parent.parent.parent / "Wan2GP"
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
         if str(wan_dir) not in sys.path:
             sys.path.insert(0, str(wan_dir))
 
@@ -127,7 +127,7 @@ def get_structure_preprocessor(
         return process_canny
 
     elif structure_type == "depth":
-        wan_dir = Path(__file__).parent.parent.parent / "Wan2GP"
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
         if str(wan_dir) not in sys.path:
             sys.path.insert(0, str(wan_dir))
 

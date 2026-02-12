@@ -33,7 +33,7 @@ def _download_lora_from_url(url: str, task_id: str, dprint=None, model_type: str
         Exception: If download fails
     """
     # Use absolute paths based on this file's location to avoid working directory issues
-    repo_root = Path(__file__).parent.parent
+    repo_root = Path(__file__).parent.parent.parent.parent
     wan_dir = repo_root / "Wan2GP"
 
     # Extract filename from URL and decode URL-encoded characters
@@ -157,7 +157,7 @@ def cleanup_legacy_lora_collisions():
     
     Checks ALL possible LoRA directories to ensure comprehensive cleanup.
     """
-    repo_root = Path(__file__).parent.parent
+    repo_root = Path(__file__).parent.parent.parent.parent
     wan_dir = repo_root / "Wan2GP"
     
     # Comprehensive list of all possible LoRA directories

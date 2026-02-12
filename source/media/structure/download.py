@@ -77,7 +77,7 @@ def download_and_extract_motion_frames(
 
         try:
             # Add Wan2GP to path (decord often installed alongside this stack)
-            wan_dir = Path(__file__).parent.parent.parent / "Wan2GP"
+            wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
             if str(wan_dir) not in sys.path:
                 sys.path.insert(0, str(wan_dir))
 

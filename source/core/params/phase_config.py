@@ -14,7 +14,7 @@ def apply_phase_config_patch(parsed_phase_config: dict, model_name: str, task_id
         return
 
     try:
-        wan_dir = Path(__file__).parent.parent / "Wan2GP"
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
 
         if str(wan_dir) not in sys.path:
             sys.path.insert(0, str(wan_dir))
@@ -69,7 +69,7 @@ def restore_model_patches(parsed_phase_config: dict, model_name: str, task_id: s
         return
 
     try:
-        wan_dir_path = str(Path(__file__).parent.parent / "Wan2GP")
+        wan_dir_path = str(Path(__file__).parent.parent.parent.parent / "Wan2GP")
         if wan_dir_path in sys.path:
             import wgp
 

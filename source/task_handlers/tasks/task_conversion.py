@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import numpy as np
 
@@ -180,8 +181,8 @@ def parse_phase_config(phase_config: dict, num_inference_steps: int, task_id: st
         # Assuming this is running from source/task_conversion.py, we need to go up one level to find Wan2GP
         # But Wan2GP is usually at root level or alongside worker.py.
         # Let's assume standard structure relative to this file.
-        # This file is in source/, so parent is root.
-        wan_dir = Path(__file__).parent.parent / "Wan2GP"
+        # This file is in source/task_handlers/tasks/, so 4 levels up to project root.
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
         defaults_dir = wan_dir / "defaults"
         
         original_config_path = defaults_dir / f"{model_name}.json"

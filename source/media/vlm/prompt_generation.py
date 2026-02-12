@@ -38,7 +38,7 @@ def generate_transition_prompt(
     """
     try:
         # Add Wan2GP to path for imports
-        wan_dir = Path(__file__).parent.parent.parent / "Wan2GP"
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
         if str(wan_dir) not in sys.path:
             sys.path.insert(0, str(wan_dir))
 
@@ -158,7 +158,7 @@ def generate_transition_prompts_batch(
         return []
 
     try:
-        wan_dir = Path(__file__).parent.parent.parent / "Wan2GP"
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
         if str(wan_dir) not in sys.path:
             sys.path.insert(0, str(wan_dir))
 
@@ -409,7 +409,7 @@ def generate_single_image_prompt(
         Generated prompt describing the image and suggesting motion
     """
     try:
-        wan_dir = Path(__file__).parent.parent.parent / "Wan2GP"
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
         if str(wan_dir) not in sys.path:
             sys.path.insert(0, str(wan_dir))
 
@@ -525,7 +525,7 @@ def generate_single_image_prompts_batch(
         return []
 
     try:
-        wan_dir = Path(__file__).parent.parent.parent / "Wan2GP"
+        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
         if str(wan_dir) not in sys.path:
             sys.path.insert(0, str(wan_dir))
 

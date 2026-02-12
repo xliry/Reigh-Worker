@@ -251,9 +251,9 @@ def upload_intermediate_file_to_storage(
     RETRYABLE_STATUS_CODES = {502, 503, 504}
     MAX_RETRIES = 3
 
-    # Check if Supabase is configured (read URL from db_operations -- canonical source set by worker.py)
-    from source import db_operations as _db_ops
-    SUPABASE_URL = _db_ops.SUPABASE_URL
+    # Check if Supabase is configured (read URL from canonical config set by worker.py)
+    from source.core.db import config as _db_config
+    SUPABASE_URL = _db_config.SUPABASE_URL
     SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_ANON_KEY")
 
     if not SUPABASE_URL or not SUPABASE_KEY:

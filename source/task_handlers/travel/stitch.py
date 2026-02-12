@@ -17,6 +17,7 @@ except ImportError:
 from ...core.log import travel_logger, safe_json_repr
 
 from ... import db_operations as db_ops
+from ...core.db import config as db_config
 from ...utils import (
     generate_unique_task_id,
     get_video_frame_count_and_fps,
@@ -902,7 +903,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
         cleanup_enabled = (
             not full_orchestrator_payload.get("skip_cleanup_enabled", False) and
             not full_orchestrator_payload.get("debug_mode_enabled", False) and
-            not db_ops.debug_mode
+            not db_config.debug_mode
         )
 
         if cleanup_enabled:

@@ -543,7 +543,7 @@ class WanOrchestrator:
             import shutil
             out_dir = Path(os.getcwd()) / "outputs"
             out_dir.mkdir(parents=True, exist_ok=True)
-            _project_root = Path(__file__).parent.parent.parent
+            _project_root = Path(__file__).parent.parent.parent.parent
             sample_src = Path(os.path.abspath(os.path.join(_project_root, "samples", "test.mp4")))
             if not sample_src.exists():
                 # Fallback to project-level samples directory
