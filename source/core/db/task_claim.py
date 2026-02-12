@@ -42,7 +42,7 @@ def init_db_supabase():
 def check_task_counts_supabase(run_type: str = "gpu") -> dict | None:
     """Check task counts via Supabase Edge Function before attempting to claim tasks."""
     if not _cfg.SUPABASE_CLIENT or not _cfg.SUPABASE_ACCESS_TOKEN:
-        dprint("[ERROR] Supabase client or access token not initialized. Cannot check task counts.")
+        headless_logger.error("[TASK_COUNTS] Supabase client or access token not initialized")
         return None
 
     # Build task-counts edge function URL using same pattern as other functions
@@ -52,7 +52,7 @@ def check_task_counts_supabase(run_type: str = "gpu") -> dict | None:
     )
 
     if not edge_url:
-        dprint("ERROR: No task-counts edge function URL available")
+        headless_logger.error("[TASK_COUNTS] No edge function URL available")
         return None
 
     try:
@@ -84,12 +84,11 @@ def check_task_counts_supabase(run_type: str = "gpu") -> dict | None:
             dprint(f"Task-counts result: {counts_data.get('totals', {})}")
             return counts_data
         else:
-            dprint(f"[TASK_COUNTS] error status={resp.status_code} body={resp.text[:500]}")
-            dprint(f"Task-counts returned {resp.status_code}: {resp.text}")
+            headless_logger.error(f"[TASK_COUNTS] Edge function returned {resp.status_code}: {resp.text[:500]}")
             return None
 
     except (httpx.HTTPError, OSError, ValueError) as e_counts:
-        dprint(f"Task-counts call failed: {e_counts}")
+        headless_logger.error(f"[TASK_COUNTS] Call failed: {e_counts}")
         return None
 
 
@@ -321,7 +320,7 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
                     return deferred_orchestrator_recovery
                 return None
             else:
-                dprint(f"Edge Function returned {resp.status_code}: {resp.text}")
+                headless_logger.error(f"[CLAIM] Edge Function returned {resp.status_code}: {resp.text[:500]}")
                 if deferred_orchestrator_recovery:
                     return deferred_orchestrator_recovery
                 return None
