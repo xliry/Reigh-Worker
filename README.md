@@ -68,7 +68,7 @@ python -m debug tasks --status Failed   # List recent failures
 
 ## Code Health
 
-<img src="scorecard.png" width="400">
+<img src="scorecard.png" width="800">
 
 ## Project Structure
 
