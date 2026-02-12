@@ -7,6 +7,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+from source.core.log import headless_logger
 from source.utils.prompt_utils import dprint, DEBUG_MODE
 from source.utils.frame_utils import (
     _image_to_frame_simple,
@@ -272,7 +273,7 @@ def create_pose_interpolated_guide_video(output_video_path: str | Path, resoluti
 
     first_visual_frame_np = _image_to_frame_simple(start_image_path, resolution)
     if first_visual_frame_np is None:
-        print(f"Error loading start image {start_image_path} for guide video frame 0. Using black frame.")
+        headless_logger.error(f"Error loading start image {start_image_path} for guide video frame 0. Using black frame.")
         traceback.print_exc()
         first_visual_frame_np = create_color_frame(resolution, (0,0,0))
     frames_list.append(first_visual_frame_np)
@@ -283,7 +284,7 @@ def create_pose_interpolated_guide_video(output_video_path: str | Path, resoluti
             keypoints_from = extract_pose_keypoints(start_image_path, include_face, include_hands, resolution)
             keypoints_to = extract_pose_keypoints(end_image_path, include_face, include_hands, resolution)
         except (OSError, ValueError, RuntimeError) as e_extract:
-            print(f"Error extracting keypoints for pose interpolation: {e_extract}. Filling remaining guide frames with black.")
+            headless_logger.error(f"Error extracting keypoints for pose interpolation: {e_extract}. Filling remaining guide frames with black.")
             traceback.print_exc()
             black_frame = create_color_frame(resolution, (0,0,0))
             for _ in range(total_frames - 1):

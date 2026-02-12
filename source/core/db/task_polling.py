@@ -9,6 +9,8 @@ from pathlib import Path
 import httpx
 from postgrest.exceptions import APIError
 
+from source.core.log import headless_logger
+
 from . import config as _cfg
 from .config import (
     STATUS_QUEUED,
@@ -33,21 +35,21 @@ def poll_task_status(task_id: str, poll_interval_seconds: int = 10, timeout_seco
     Returns:
         Output location string if successful, None otherwise
     """
-    print(f"Polling for completion of task {task_id} (timeout: {timeout_seconds}s)...")
+    headless_logger.essential(f"Polling for completion of task {task_id} (timeout: {timeout_seconds}s)...", task_id=task_id)
     start_time = time.time()
     last_status_print_time = 0
 
     while True:
         current_time = time.time()
         if current_time - start_time > timeout_seconds:
-            print(f"Error: Timeout polling for task {task_id} after {timeout_seconds} seconds.")
+            headless_logger.error(f"Timeout polling for task {task_id} after {timeout_seconds} seconds.", task_id=task_id)
             return None
 
         status = None
         output_location = None
 
         if not _cfg.SUPABASE_CLIENT:
-            print("[ERROR] Supabase client not initialized. Cannot poll status.")
+            headless_logger.error("Supabase client not initialized. Cannot poll status.", task_id=task_id)
             time.sleep(poll_interval_seconds)
             continue
         try:
@@ -57,29 +59,29 @@ def poll_task_status(task_id: str, poll_interval_seconds: int = 10, timeout_seco
                 status = resp.data.get("status")
                 output_location = resp.data.get("output_location")
         except (APIError, httpx.HTTPError, OSError, ValueError, KeyError) as e:
-            print(f"Supabase error while polling task {task_id}: {e}. Retrying...")
+            headless_logger.error(f"Supabase error while polling task {task_id}: {e}. Retrying...", task_id=task_id)
 
         if status:
             if current_time - last_status_print_time > poll_interval_seconds * 2:
-                print(f"Task {task_id}: Status = {status} (Output: {output_location if output_location else 'N/A'})")
+                headless_logger.essential(f"Task {task_id}: Status = {status} (Output: {output_location if output_location else 'N/A'})", task_id=task_id)
                 last_status_print_time = current_time
 
             if status == STATUS_COMPLETE:
                 if output_location:
-                    print(f"Task {task_id} completed successfully. Output: {output_location}")
+                    headless_logger.essential(f"Task {task_id} completed successfully. Output: {output_location}", task_id=task_id)
                     return output_location
                 else:
-                    print(f"Error: Task {task_id} is COMPLETE but output_location is missing. Assuming failure.")
+                    headless_logger.error(f"Task {task_id} is COMPLETE but output_location is missing. Assuming failure.", task_id=task_id)
                     return None
             elif status == STATUS_FAILED:
-                print(f"Error: Task {task_id} failed. Error details: {output_location}")
+                headless_logger.error(f"Task {task_id} failed. Error details: {output_location}", task_id=task_id)
                 return None
             elif status not in [STATUS_QUEUED, STATUS_IN_PROGRESS]:
-                print(f"Warning: Task {task_id} has unknown status '{status}'. Treating as error.")
+                headless_logger.warning(f"Task {task_id} has unknown status '{status}'. Treating as error.", task_id=task_id)
                 return None
         else:
             if current_time - last_status_print_time > poll_interval_seconds * 2:
-                print(f"Task {task_id}: Not found in DB yet or status pending...")
+                headless_logger.essential(f"Task {task_id}: Not found in DB yet or status pending...", task_id=task_id)
                 last_status_print_time = current_time
 
         time.sleep(poll_interval_seconds)
@@ -108,11 +110,11 @@ def get_task_output_location_from_db(task_id_to_find: str) -> str | None:
     )
 
     if not edge_url:
-        print(f"[ERROR] No edge function URL available for get-task-output")
+        headless_logger.error(f"No edge function URL available for get-task-output", task_id=task_id_to_find)
         return None
 
     if not _cfg.SUPABASE_ACCESS_TOKEN:
-        print(f"[ERROR] No access token available for get-task-output")
+        headless_logger.error(f"No access token available for get-task-output", task_id=task_id_to_find)
         return None
 
     headers = {
@@ -136,7 +138,7 @@ def get_task_output_location_from_db(task_id_to_find: str) -> str | None:
         )
 
         if edge_error:
-            print(f"[ERROR] get-task-output failed for {task_id_to_find}: {edge_error}")
+            headless_logger.error(f"get-task-output failed for {task_id_to_find}: {edge_error}", task_id=task_id_to_find)
             return None
 
         if resp and resp.status_code == 200:
@@ -155,11 +157,11 @@ def get_task_output_location_from_db(task_id_to_find: str) -> str | None:
             return None
         else:
             status_code = resp.status_code if resp else "no response"
-            print(f"[ERROR] get-task-output unexpected response for {task_id_to_find}: {status_code}")
+            headless_logger.error(f"get-task-output unexpected response for {task_id_to_find}: {status_code}", task_id=task_id_to_find)
             return None
 
     except (httpx.HTTPError, OSError, ValueError) as e:
-        print(f"[ERROR] get-task-output exception for {task_id_to_find}: {e}")
+        headless_logger.error(f"get-task-output exception for {task_id_to_find}: {e}", task_id=task_id_to_find)
         traceback.print_exc()
         return None
 
@@ -217,14 +219,6 @@ def get_task_params(task_id: str) -> str | None:
     except (httpx.HTTPError, OSError, ValueError) as e:
         dprint(f"Error getting task params for {task_id}: {e}")
         return None
-
-
-def get_initial_task_counts() -> tuple[int, int] | None:
-    """
-    Gets the total and queued task counts (no longer supported - returns None).
-    This function is kept for API compatibility.
-    """
-    return None
 
 
 def get_abs_path_from_db_path(db_path: str, dprint) -> Path | None:

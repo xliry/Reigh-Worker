@@ -22,6 +22,7 @@ from ..utils import (
     upload_and_get_final_output_location,
     report_orchestrator_failure
 )
+from source.core.log import task_logger
 
 
 def _handle_magic_edit_task(
@@ -43,13 +44,13 @@ def _handle_magic_edit_task(
     Returns:
         Tuple of (success_bool, output_location_or_error_message)
     """
-    print(f"[Task ID: {task_id}] Starting magic_edit task")
+    task_logger.essential("Starting magic_edit task", task_id=task_id)
     
     try:
         # Check if replicate is available
         if replicate is None:
             msg = "Replicate library not installed. Run: pip install replicate"
-            print(f"[ERROR Task ID: {task_id}] {msg}")
+            task_logger.error(msg, task_id=task_id)
             report_orchestrator_failure(task_params_from_db, msg, dprint)
             return False, msg
             
@@ -57,7 +58,7 @@ def _handle_magic_edit_task(
         api_token = os.getenv("REPLICATE_API_TOKEN")
         if not api_token:
             msg = "REPLICATE_API_TOKEN environment variable not set"
-            print(f"[ERROR Task ID: {task_id}] {msg}")
+            task_logger.error(msg, task_id=task_id)
             report_orchestrator_failure(task_params_from_db, msg, dprint)
             return False, msg
             
@@ -74,7 +75,7 @@ def _handle_magic_edit_task(
         
         if not image_url:
             msg = "image_url is required in orchestrator_details"
-            print(f"[ERROR Task ID: {task_id}] {msg}")
+            task_logger.error(msg, task_id=task_id)
             report_orchestrator_failure(task_params_from_db, msg, dprint)
             return False, msg
             
@@ -88,7 +89,7 @@ def _handle_magic_edit_task(
             # Validate that we have a URL (Replicate expects URLs, not local files)
             if not image_url.startswith(("http://", "https://")):
                 msg = f"image_url must be a valid HTTP/HTTPS URL, got: {image_url}"
-                print(f"[ERROR Task ID: {task_id}] {msg}")
+                task_logger.error(msg, task_id=task_id)
                 return False, msg
                     
             dprint(f"Task {task_id}: Using image URL directly with Replicate: {image_url}")
@@ -114,7 +115,7 @@ def _handle_magic_edit_task(
             if seed is not None:
                 replicate_input["seed"] = int(seed)
                 
-            print(f"[Task ID: {task_id}] Running Replicate black-forest-labs/flux-kontext-dev-lora model...")
+            task_logger.essential("Running Replicate black-forest-labs/flux-kontext-dev-lora model...", task_id=task_id)
             dprint(f"Task {task_id}: Replicate input: {replicate_input}")
             
             # Run the model
@@ -123,7 +124,7 @@ def _handle_magic_edit_task(
                 input=replicate_input
             )
             
-            print(f"[Task ID: {task_id}] Replicate processing completed")
+            task_logger.essential("Replicate processing completed", task_id=task_id)
             dprint(f"Task {task_id}: Replicate output type: {type(output)}")
             
             # Download the result
@@ -147,15 +148,15 @@ def _handle_magic_edit_task(
                     f.write(response.content)
             else:
                 msg = f"Unexpected output type from Replicate: {type(output)}"
-                print(f"[ERROR Task ID: {task_id}] {msg}")
+                task_logger.error(msg, task_id=task_id)
                 return False, msg
                 
             if not output_image_path.exists() or output_image_path.stat().st_size == 0:
                 msg = "Failed to download result from Replicate"
-                print(f"[ERROR Task ID: {task_id}] {msg}")
+                task_logger.error(msg, task_id=task_id)
                 return False, msg
                 
-            print(f"[Task ID: {task_id}] Downloaded result image: {output_image_path.name} ({output_image_path.stat().st_size} bytes)")
+            task_logger.essential(f"Downloaded result image: {output_image_path.name} ({output_image_path.stat().st_size} bytes)", task_id=task_id)
             
             # Prepare final output path
             final_output_path, initial_db_location = prepare_output_path_with_upload(
@@ -178,7 +179,7 @@ def _handle_magic_edit_task(
                 dprint=dprint
             )
             
-            print(f"[Task ID: {task_id}] Magic edit completed successfully: {final_output_path.resolve()}")
+            task_logger.essential(f"Magic edit completed successfully: {final_output_path.resolve()}", task_id=task_id)
             return True, final_db_location
             
         finally:
@@ -187,12 +188,12 @@ def _handle_magic_edit_task(
                 shutil.rmtree(temp_dir)
                 dprint(f"Task {task_id}: Cleaned up temp directory: {temp_dir}")
             except OSError as e_cleanup:
-                print(f"[WARNING Task ID: {task_id}] Failed to cleanup temp directory {temp_dir}: {e_cleanup}")
+                task_logger.warning(f"Failed to cleanup temp directory {temp_dir}: {e_cleanup}", task_id=task_id)
                 # Cleanup failure is non-fatal; the task result is already determined
                 
     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as e:
-        print(f"[ERROR Task ID: {task_id}] Magic edit task failed: {e}")
-        traceback.print_exc()
+        task_logger.error(f"Magic edit task failed: {e}", task_id=task_id)
+        task_logger.debug(f"Magic edit traceback: {traceback.format_exc()}", task_id=task_id)
         msg = f"Magic edit exception: {e}"
         report_orchestrator_failure(task_params_from_db, msg, dprint)
         return False, msg

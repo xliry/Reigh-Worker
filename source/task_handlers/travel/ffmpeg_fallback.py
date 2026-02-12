@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from ...core.log import travel_logger
+
 
 def attempt_ffmpeg_crossfade_fallback(segment_video_paths: list[str], overlaps: list[int], output_path: Path, task_id: str, dprint) -> bool:
     """
@@ -39,7 +41,7 @@ def attempt_ffmpeg_crossfade_fallback(segment_video_paths: list[str], overlaps: 
             dprint(f"FFmpeg Fallback: Invalid FPS ({fps})")
             return False
 
-        print(f"[FFMPEG FALLBACK] Creating cross-fade with {len(segment_video_paths)} videos at {fps} FPS")
+        travel_logger.essential(f"FFmpeg fallback: Creating cross-fade with {len(segment_video_paths)} videos at {fps} FPS", task_id=task_id)
 
         # Build FFmpeg command for cross-fade stitching
         cmd = ["ffmpeg", "-y"]  # -y to overwrite output
@@ -90,28 +92,28 @@ def attempt_ffmpeg_crossfade_fallback(segment_video_paths: list[str], overlaps: 
             str(output_path)
         ])
 
-        print(f"[FFMPEG FALLBACK] Running command: {' '.join(cmd[:10])}...")  # Don't log full command (too long)
+        travel_logger.debug(f"FFmpeg fallback: Running command: {' '.join(cmd[:10])}...", task_id=task_id)
         dprint(f"FFmpeg Fallback: Running cross-fade command")
 
         # Run FFmpeg
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
         if result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
-            print(f"[FFMPEG FALLBACK] Success! Output: {output_path} ({output_path.stat().st_size:,} bytes)")
+            travel_logger.essential(f"FFmpeg fallback success! Output: {output_path} ({output_path.stat().st_size:,} bytes)", task_id=task_id)
             dprint(f"FFmpeg Fallback: Success - created {output_path}")
             return True
         else:
-            print(f"[FFMPEG FALLBACK] Failed with return code {result.returncode}")
+            travel_logger.error(f"FFmpeg fallback failed with return code {result.returncode}", task_id=task_id)
             if result.stderr:
-                print(f"[FFMPEG FALLBACK] Error: {result.stderr[:200]}...")
+                travel_logger.error(f"FFmpeg fallback error: {result.stderr[:200]}...", task_id=task_id)
             dprint(f"FFmpeg Fallback: Failed - {result.stderr[:100] if result.stderr else 'Unknown error'}")
             return False
 
     except subprocess.TimeoutExpired:
-        print(f"[FFMPEG FALLBACK] Timeout after 300 seconds")
+        travel_logger.error(f"FFmpeg fallback timeout after 300 seconds", task_id=task_id)
         dprint(f"FFmpeg Fallback: Timeout")
         return False
     except (subprocess.SubprocessError, OSError, ValueError) as e:
-        print(f"[FFMPEG FALLBACK] Exception: {e}")
+        travel_logger.error(f"FFmpeg fallback exception: {e}", task_id=task_id)
         dprint(f"FFmpeg Fallback: Exception - {e}")
         return False

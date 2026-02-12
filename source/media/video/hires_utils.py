@@ -16,6 +16,8 @@ import torch
 import torch.nn.functional as F
 from typing import Dict, List, Tuple, Optional
 
+from source.core.log import headless_logger
+
 
 class HiresFixHelper:
     """Shared utilities for two-pass hires fix across diffusion models."""
@@ -137,7 +139,7 @@ class HiresFixHelper:
             )
 
             if errors:
-                print(f"⚠️ Errors building loras_slists: {errors}")
+                headless_logger.warning(f"Errors building loras_slists: {errors}")
                 return None, phase_values, 0
 
             # Count active LoRAs (non-zero multipliers)
@@ -146,7 +148,7 @@ class HiresFixHelper:
             return loras_slists, phase_values, active_count
 
         except (ValueError, TypeError, RuntimeError) as e:
-            print(f"❌ Error filtering LoRAs for phase {phase_index}: {e}")
+            headless_logger.error(f"Error filtering LoRAs for phase {phase_index}: {e}")
             import traceback
             traceback.print_exc()
             return None, [], 0
@@ -167,22 +169,21 @@ class HiresFixHelper:
         """
         disabled_count = len(lora_names) - active_count
 
-        print("=" * 60)
-        print("🔧 Pass 2 LoRA Configuration:")
-        print("=" * 60)
-        print(f"Total LoRAs: {len(lora_names)}")
-        print(f"Active: {active_count} | Disabled: {disabled_count}")
-        print()
+        headless_logger.essential("=" * 60)
+        headless_logger.essential("Pass 2 LoRA Configuration:")
+        headless_logger.essential("=" * 60)
+        headless_logger.essential(f"Total LoRAs: {len(lora_names)}")
+        headless_logger.essential(f"Active: {active_count} | Disabled: {disabled_count}")
 
         for i, (name, mult) in enumerate(zip(lora_names, phase_values), 1):
             mult_float = float(mult)
             if mult_float == 0:
-                status = "○"
+                status = "disabled"
                 suffix = "(disabled)"
             else:
-                status = "✓"
+                status = "active"
                 suffix = ""
 
-            print(f"   {status} LoRA {i}: {name} @ {mult} {suffix}")
+            headless_logger.essential(f"   [{status}] LoRA {i}: {name} @ {mult} {suffix}")
 
-        print("=" * 60)
+        headless_logger.essential("=" * 60)

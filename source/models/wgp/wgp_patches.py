@@ -267,7 +267,7 @@ def apply_lora_key_tolerance_patch(wgp_module: "types.ModuleType") -> bool:
                         continue
 
                 if keys_to_remove:
-                    print(f"[LORA_TOLERANCE] Stripping {len(keys_to_remove)} non-standard/incompatible keys from LoRA: "
+                    model_logger.essential(f"[LORA_TOLERANCE] Stripping {len(keys_to_remove)} non-standard/incompatible keys from LoRA: "
                           f"{keys_to_remove[:5]}{'...' if len(keys_to_remove) > 5 else ''}")
                     for k in keys_to_remove:
                         del sd[k]

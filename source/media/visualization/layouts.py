@@ -1,6 +1,8 @@
 """Layout functions for visualization collages."""
 
 from typing import List, Optional
+
+from source.core.log import headless_logger
 from source.media.visualization.timeline import _create_timeline_clip
 
 
@@ -47,7 +49,7 @@ def _create_multi_layout(
             ).set_duration(structure_resized.duration).set_position(('left', 'top'))
             structure_resized = CompositeVideoClip([structure_resized, text_clip])
         except (OSError, ValueError, RuntimeError) as e:
-            print(f"Warning: Could not add structure overlay: {e}")
+            headless_logger.warning(f"Could not add structure overlay: {e}")
 
     if include_guidance and guidance_clip:
         guidance_resized = guidance_clip.resize(height=target_height)
@@ -162,7 +164,7 @@ def _create_grid_layout(
 
             structure_resized = CompositeVideoClip([structure_resized, text_clip])
         except (OSError, ValueError, RuntimeError) as e:
-            print(f"Warning: Could not add structure overlay: {e}")
+            headless_logger.warning(f"Could not add structure overlay: {e}")
 
     if guidance_clip:
         guidance_resized = guidance_clip.resize(height=target_height)
@@ -241,8 +243,8 @@ def _create_vertical_layout(
     structure_resized = ensure_even_dimensions(structure_resized)
     output_resized = ensure_even_dimensions(output_resized)
 
-    print(f"  structure_resized: {structure_resized.w}x{structure_resized.h}")
-    print(f"  output_resized: {output_resized.w}x{output_resized.h}")
+    headless_logger.debug(f"  structure_resized: {structure_resized.w}x{structure_resized.h}")
+    headless_logger.debug(f"  output_resized: {output_resized.w}x{output_resized.h}")
 
     if structure_video_type and structure_video_strength is not None:
         from moviepy.editor import TextClip, CompositeVideoClip
@@ -262,7 +264,7 @@ def _create_vertical_layout(
 
             structure_resized = CompositeVideoClip([structure_resized, text_clip])
         except (OSError, ValueError, RuntimeError) as e:
-            print(f"Warning: Could not add structure overlay: {e}")
+            headless_logger.warning(f"Could not add structure overlay: {e}")
 
     video_stack = clips_array([[structure_resized], [output_resized]])
 

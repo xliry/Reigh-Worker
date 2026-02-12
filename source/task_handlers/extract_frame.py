@@ -66,7 +66,7 @@ def handle_extract_frame_task(task_params_dict: dict, main_output_dir_base: Path
             final_db_location = upload_and_get_final_output_location(
                 final_save_path, task_id, initial_db_location, dprint=dprint
             )
-            print(f"[Task ID: {task_id}] Successfully extracted frame {frame_index} to: {final_save_path}")
+            task_logger.essential(f"Successfully extracted frame {frame_index} to: {final_save_path}", task_id=task_id)
             return True, final_db_location
         else:
             msg = f"Task {task_id}: save_frame_from_video utility failed for video {video_abs_path}."
@@ -75,7 +75,7 @@ def handle_extract_frame_task(task_params_dict: dict, main_output_dir_base: Path
 
     except (OSError, ValueError, RuntimeError) as e:
         error_msg = f"Task {task_id}: Failed during frame extraction: {e}"
-        print(f"[ERROR] {error_msg}")
-        traceback.print_exc()
+        task_logger.error(error_msg, task_id=task_id)
+        task_logger.debug(f"Extract frame traceback: {traceback.format_exc()}", task_id=task_id)
         report_orchestrator_failure(task_params_dict, error_msg, dprint)
         return False, str(e)

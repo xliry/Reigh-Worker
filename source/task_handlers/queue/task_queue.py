@@ -36,7 +36,7 @@ try:
 except ImportError:
     def dprint(msg):
         if os.environ.get('DEBUG'):
-            print(msg)
+            queue_logger.debug(msg)
 import threading
 import queue
 import argparse
@@ -145,7 +145,7 @@ class HeadlessTaskQueue:
             sys.modules['preprocessing'] = dummy_pkg
             sys.modules['preprocessing.matanyone'] = dummy_matanyone
             sys.modules['preprocessing.matanyone.app'] = dummy_app
-        except Exception as e:
+        except (TypeError, AttributeError, ImportError) as e:
             logging.getLogger('HeadlessQueue').debug(f"Failed to set up headless UI stubs: {e}")
         # Don't import wgp during initialization to avoid CUDA/argparse conflicts
         # wgp will be imported lazily when needed (e.g., in _apply_sampler_cfg_preset)
@@ -155,7 +155,7 @@ class HeadlessTaskQueue:
         # Restore sys.argv immediately (no wgp import, so no need for protection)
         try:
             sys.argv = _saved_argv
-        except Exception as e:
+        except (TypeError, AttributeError) as e:
             logging.getLogger('HeadlessQueue').debug(f"Failed to restore sys.argv after init: {e}")
         
         # Defer orchestrator initialization to avoid CUDA init during queue setup
@@ -500,7 +500,7 @@ class HeadlessTaskQueue:
             else:
                 # Ultimate fallback: name-based detection
                 return "vace" in model_key.lower()
-        except Exception as e:
+        except (AttributeError, ValueError, TypeError) as e:
             self.logger.warning(f"Could not determine VACE support for model '{model_key}': {e}")
             return "vace" in model_key.lower()
     
@@ -570,7 +570,7 @@ class HeadlessTaskQueue:
                             try:
                                 video_path_obj.unlink()
                                 self.logger.info(f"[PNG_CONVERSION] Task {task.id}: Removed original video file")
-                            except Exception as e_cleanup:
+                            except OSError as e_cleanup:
                                 self.logger.warning(f"[PNG_CONVERSION] Task {task.id}: Could not remove original video: {e_cleanup}")
                             
                             return str(png_path)
@@ -585,7 +585,7 @@ class HeadlessTaskQueue:
                 
         except ImportError:
             self.logger.warning(f"[PNG_CONVERSION] Task {task.id}: OpenCV not available, keeping video format")
-        except Exception as e:
+        except (OSError, ValueError, RuntimeError) as e:
             self.logger.error(f"[PNG_CONVERSION] Task {task.id}: Error during conversion: {e}")
         
         # Return original video path if conversion failed
@@ -630,7 +630,7 @@ class HeadlessTaskQueue:
             else:
                 self.logger.debug(f"No CFG preset found for sampler '{sample_solver}' in model '{model_key}'")
                 
-        except Exception as e:
+        except (ValueError, KeyError, AttributeError, TypeError, ImportError) as e:
             self.logger.warning(f"Failed to apply sampler CFG preset: {e}")
     
     def _get_memory_usage(self) -> Dict[str, Any]:
@@ -670,7 +670,7 @@ def main():
 
     # Setup signal handlers
     def signal_handler(signum, frame):
-        print("\nReceived shutdown signal, stopping...")
+        queue_logger.essential("Received shutdown signal, stopping...")
         task_queue.stop()
         sys.exit(0)
 
@@ -681,14 +681,14 @@ def main():
         # Start services
         task_queue.start()
 
-        print(f"Headless queue started")
-        print(f"WanGP directory: {args.wan_dir}")
-        print(f"Workers: {args.workers}")
-        print("Press Ctrl+C to stop...")
+        queue_logger.essential(f"Headless queue started")
+        queue_logger.essential(f"WanGP directory: {args.wan_dir}")
+        queue_logger.essential(f"Workers: {args.workers}")
+        queue_logger.essential("Press Ctrl+C to stop...")
 
         # Example: Submit some test tasks
         if args.debug:
-            print("\nSubmitting test tasks...")
+            queue_logger.debug("Submitting test tasks...")
 
             # Test T2V task
             t2v_task = create_sample_task(
@@ -708,14 +708,14 @@ def main():
             # Print periodic status
             if args.debug:
                 status = task_queue.get_queue_status()
-                print(f"Queue: {status.pending_tasks} pending, "
+                queue_logger.debug(f"Queue: {status.pending_tasks} pending, "
                       f"{status.completed_tasks} completed, "
                       f"{status.failed_tasks} failed")
 
     except KeyboardInterrupt:
-        print("\nShutdown requested by user")
+        queue_logger.essential("Shutdown requested by user")
     except Exception as e:
-        print(f"Fatal error: {e}")
+        queue_logger.error(f"Fatal error: {e}")
         raise
     finally:
         task_queue.stop()

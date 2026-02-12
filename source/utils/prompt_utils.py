@@ -3,6 +3,8 @@
 import uuid
 from datetime import datetime
 
+from source.core.log import headless_logger
+
 # --- Global Debug Mode ---
 # This will be set by the main script (steerable_motion.py)
 DEBUG_MODE = False
@@ -19,7 +21,7 @@ DEFAULT_DB_TABLE_NAME = "tasks"
 def dprint(msg: str):
     """Print a debug message if DEBUG_MODE is enabled."""
     if DEBUG_MODE:
-        print(f"[DEBUG SM-COMMON {datetime.utcnow().isoformat()}Z] {msg}")
+        headless_logger.debug(f"[SM-COMMON] {msg}")
 
 
 def _ensure_valid_text(text: str | None) -> str:

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 import cv2
 
+from source.core.log import headless_logger
 from source.media.visualization.timeline import _apply_video_treatment
 from source.media.visualization.layouts import (
     _create_side_by_side_layout,
@@ -63,7 +64,7 @@ def create_travel_visualization(
         output_path = Path(output_video_path)
         viz_output_path = str(output_path.parent / f"{output_path.stem}_viz.mp4")
 
-    print(f"\U0001f4f9 Loading videos for visualization...")
+    headless_logger.essential(f"Loading videos for visualization...")
     output_clip = VideoFileClip(output_video_path)
     structure_clip = VideoFileClip(structure_video_path)
 
@@ -72,7 +73,7 @@ def create_travel_visualization(
     else:
         guidance_clip = None
 
-    print(f"\U0001f4d0 Structure video treatment: {structure_video_treatment}")
+    headless_logger.essential(f"Structure video treatment: {structure_video_treatment}")
     structure_clip = _apply_video_treatment(
         structure_clip,
         target_duration=output_clip.duration,
@@ -114,7 +115,7 @@ def create_travel_visualization(
     else:
         raise ValueError(f"Unknown layout: {layout}")
 
-    print(f"\U0001f4be Writing visualization to: {viz_output_path}")
+    headless_logger.essential(f"Writing visualization to: {viz_output_path}")
     result.write_videofile(
         viz_output_path,
         fps=fps,
@@ -131,7 +132,7 @@ def create_travel_visualization(
         guidance_clip.close()
     result.close()
 
-    print(f"\u2705 Visualization saved: {viz_output_path}")
+    headless_logger.essential(f"Visualization saved: {viz_output_path}")
     return viz_output_path
 
 
@@ -160,7 +161,7 @@ def create_simple_comparison(
     except ImportError:
         raise ImportError("MoviePy is required. Install with: pip install moviepy")
 
-    print(f"\U0001f4f9 Creating comparison video...")
+    headless_logger.essential(f"Creating comparison video...")
 
     clip1 = VideoFileClip(video1_path)
     clip2 = VideoFileClip(video2_path)
@@ -176,14 +177,14 @@ def create_simple_comparison(
             label2 = label2.set_duration(clip2.duration).set_position(("center", "top"))
             clip2 = CompositeVideoClip([clip2, label2])
         except (OSError, ValueError, RuntimeError):
-            print("Warning: Could not add labels (text rendering failed)")
+            headless_logger.warning("Could not add labels (text rendering failed)")
 
     if orientation == "horizontal":
         final = clips_array([[clip1, clip2]])
     else:
         final = clips_array([[clip1], [clip2]])
 
-    print(f"\U0001f4be Writing comparison to: {output_path}")
+    headless_logger.essential(f"Writing comparison to: {output_path}")
     final.write_videofile(
         output_path,
         codec='libx264',
@@ -197,7 +198,7 @@ def create_simple_comparison(
     clip2.close()
     final.close()
 
-    print(f"\u2705 Comparison saved: {output_path}")
+    headless_logger.essential(f"Comparison saved: {output_path}")
     return output_path
 
 
@@ -219,7 +220,7 @@ def create_opencv_side_by_side(
     Returns:
         Path to created comparison video
     """
-    print(f"\U0001f4f9 Creating OpenCV side-by-side comparison...")
+    headless_logger.essential(f"Creating OpenCV side-by-side comparison...")
 
     cap1 = cv2.VideoCapture(video1_path)
     cap2 = cv2.VideoCapture(video2_path)
@@ -261,11 +262,11 @@ def create_opencv_side_by_side(
         frame_count += 1
 
         if frame_count % 100 == 0:
-            print(f"  Processed {frame_count} frames...")
+            headless_logger.debug(f"  Processed {frame_count} frames...")
 
     cap1.release()
     cap2.release()
     out.release()
 
-    print(f"\u2705 Comparison saved: {output_path} ({frame_count} frames)")
+    headless_logger.essential(f"Comparison saved: {output_path} ({frame_count} frames)")
     return output_path

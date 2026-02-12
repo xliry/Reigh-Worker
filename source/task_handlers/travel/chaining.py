@@ -106,7 +106,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
             wait_for_file_stable(video_to_process_abs_path, checks=3, interval=1.0, dprint=dprint)
 
             shutil.move(str(video_to_process_abs_path), str(moved_video_abs_path))
-            print(f"[CHAIN_DEBUG] Moved WGP output from {video_to_process_abs_path} to {moved_video_abs_path}")
+            travel_logger.debug(f"Moved WGP output from {video_to_process_abs_path} to {moved_video_abs_path}", task_id=wgp_task_id)
             debug_video_analysis(moved_video_abs_path, f"MOVED_WGP_OUTPUT_Seg{segment_idx_completed}", wgp_task_id)
             dprint(f"Chain (Seg {segment_idx_completed}): Moved WGP output from {video_to_process_abs_path} to {moved_video_abs_path}")
             
@@ -290,7 +290,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                 )
                 
                 if apply_saturation_to_video_ffmpeg(str(video_to_process_abs_path), saturated_video_output_abs_path, sat_level):
-                    print(f"[CHAIN_DEBUG] Saturation applied successfully to segment {segment_idx_completed}")
+                    travel_logger.debug(f"Saturation applied successfully to segment {segment_idx_completed}", task_id=wgp_task_id)
                     debug_video_analysis(saturated_video_output_abs_path, f"SATURATED_Seg{segment_idx_completed}", wgp_task_id)
                     dprint(f"Chain (Seg {segment_idx_completed}): Saturation successful. New path: {new_db_path}")
                     _cleanup_intermediate_video(full_orchestrator_payload, video_to_process_abs_path, segment_idx_completed, "raw", dprint)
@@ -298,7 +298,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                     video_to_process_abs_path = saturated_video_output_abs_path
                     final_video_path_for_db = new_db_path
                 else:
-                    print(f"[CHAIN_DEBUG] WARNING: Saturation failed for segment {segment_idx_completed}")
+                    travel_logger.warning(f"Saturation failed for segment {segment_idx_completed}", task_id=wgp_task_id)
                     dprint(f"[WARNING] Chain (Seg {segment_idx_completed}): Saturation failed. Continuing with unsaturated video.")
             
             # --- 2. Brightness ---
@@ -317,7 +317,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                 processed_video = apply_brightness_to_video_frames(str(video_to_process_abs_path), brightened_video_output_abs_path, brightness_adjust, wgp_task_id)
 
                 if processed_video and processed_video.exists():
-                    print(f"[CHAIN_DEBUG] Brightness adjustment applied successfully to segment {segment_idx_completed}")
+                    travel_logger.debug(f"Brightness adjustment applied successfully to segment {segment_idx_completed}", task_id=wgp_task_id)
                     debug_video_analysis(brightened_video_output_abs_path, f"BRIGHTENED_Seg{segment_idx_completed}", wgp_task_id)
                     dprint(f"Chain (Seg {segment_idx_completed}): Brightness adjustment successful. New path: {new_db_path}")
                     _cleanup_intermediate_video(full_orchestrator_payload, video_to_process_abs_path, segment_idx_completed, "saturated", dprint)
@@ -325,16 +325,14 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                     video_to_process_abs_path = brightened_video_output_abs_path
                     final_video_path_for_db = new_db_path
                 else:
-                    print(f"[CHAIN_DEBUG] WARNING: Brightness adjustment failed for segment {segment_idx_completed}")
+                    travel_logger.warning(f"Brightness adjustment failed for segment {segment_idx_completed}", task_id=wgp_task_id)
                     dprint(f"[WARNING] Chain (Seg {segment_idx_completed}): Brightness adjustment failed. Continuing with previous video version.")
 
         # --- 3. Color Matching (Applied to all segments if enabled) ---
         if chain_details.get("colour_match_videos"):
             start_ref = chain_details.get("cm_start_ref_path")
             end_ref = chain_details.get("cm_end_ref_path")
-            print(f"[CHAIN_DEBUG] Color matching requested for segment {segment_idx_completed}")
-            print(f"[CHAIN_DEBUG] Start ref: {start_ref}")
-            print(f"[CHAIN_DEBUG] End ref: {end_ref}")
+            travel_logger.debug(f"Color matching requested for segment {segment_idx_completed}. Start ref: {start_ref}, End ref: {end_ref}", task_id=wgp_task_id)
             dprint(f"Chain (Seg {segment_idx_completed}): Color matching requested. Start Ref: {start_ref}, End Ref: {end_ref}")
 
             if start_ref and end_ref and Path(start_ref).exists() and Path(end_ref).exists():
@@ -355,7 +353,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                 )
 
                 if matched_video_path and Path(matched_video_path).exists():
-                    print(f"[CHAIN_DEBUG] Color matching applied successfully to segment {segment_idx_completed}")
+                    travel_logger.debug(f"Color matching applied successfully to segment {segment_idx_completed}", task_id=wgp_task_id)
                     debug_video_analysis(Path(matched_video_path), f"COLORMATCHED_Seg{segment_idx_completed}", wgp_task_id)
                     dprint(f"Chain (Seg {segment_idx_completed}): Color matching successful. New path: {new_db_path}")
                     _cleanup_intermediate_video(full_orchestrator_payload, video_to_process_abs_path, segment_idx_completed, "pre-colormatch", dprint)
@@ -363,10 +361,10 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                     video_to_process_abs_path = Path(matched_video_path)
                     final_video_path_for_db = new_db_path
                 else:
-                    print(f"[CHAIN_DEBUG] WARNING: Color matching failed for segment {segment_idx_completed}")
+                    travel_logger.warning(f"Color matching failed for segment {segment_idx_completed}", task_id=wgp_task_id)
                     dprint(f"[WARNING] Chain (Seg {segment_idx_completed}): Color matching failed. Continuing with previous video version.")
             else:
-                print(f"[CHAIN_DEBUG] WARNING: Color matching skipped - missing or invalid reference images")
+                travel_logger.warning(f"Color matching skipped - missing or invalid reference images", task_id=wgp_task_id)
                 dprint(f"[WARNING] Chain (Seg {segment_idx_completed}): Skipping color matching due to missing or invalid reference image paths.")
 
         # --- 4. Optional: Overlay start/end images above the video ---
@@ -389,7 +387,7 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                     output_video_path=str(banner_video_abs_path),
                     dprint=dprint,
                 ):
-                    print(f"[CHAIN_DEBUG] Banner overlay applied successfully to segment {segment_idx_completed}")
+                    travel_logger.debug(f"Banner overlay applied successfully to segment {segment_idx_completed}", task_id=wgp_task_id)
                     debug_video_analysis(banner_video_abs_path, f"BANNER_OVERLAY_Seg{segment_idx_completed}", wgp_task_id)
                     dprint(f"Chain (Seg {segment_idx_completed}): Banner overlay successful. New path: {new_db_path}")
                     _cleanup_intermediate_video(full_orchestrator_payload, video_to_process_abs_path, segment_idx_completed, "pre-banner", dprint)
@@ -397,15 +395,14 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
                     video_to_process_abs_path = banner_video_abs_path
                     final_video_path_for_db = new_db_path
                 else:
-                    print(f"[CHAIN_DEBUG] WARNING: Banner overlay failed for segment {segment_idx_completed}")
+                    travel_logger.warning(f"Banner overlay failed for segment {segment_idx_completed}", task_id=wgp_task_id)
                     dprint(f"[WARNING] Chain (Seg {segment_idx_completed}): Banner overlay failed. Keeping previous video version.")
             else:
-                print(f"[CHAIN_DEBUG] WARNING: Banner overlay skipped - missing valid start/end images")
+                travel_logger.warning(f"Banner overlay skipped - missing valid start/end images", task_id=wgp_task_id)
                 dprint(f"[WARNING] Chain (Seg {segment_idx_completed}): show_input_images enabled but valid start/end images not found.")
 
         # The orchestrator has already enqueued all segment and stitch tasks.
-        print(f"[CHAIN_DEBUG] Chaining complete for segment {segment_idx_completed}")
-        print(f"[CHAIN_DEBUG] Final video path for DB: {final_video_path_for_db}")
+        travel_logger.debug(f"Chaining complete for segment {segment_idx_completed}. Final video path for DB: {final_video_path_for_db}", task_id=wgp_task_id)
         debug_video_analysis(video_to_process_abs_path, f"FINAL_CHAINED_Seg{segment_idx_completed}", wgp_task_id)
         msg = f"Chain (Seg {segment_idx_completed}): Post-WGP processing complete. Final path for this WGP task's output: {final_video_path_for_db}"
         dprint(msg)
@@ -413,8 +410,8 @@ def _handle_travel_chaining_after_wgp(wgp_task_params: dict, actual_wgp_output_v
 
     except (RuntimeError, ValueError, OSError, KeyError, TypeError) as e_chain:
         error_msg = f"Chain (Seg {chain_details.get('segment_index_completed', 'N/A')} for WGP {wgp_task_id}): Failed during chaining: {e_chain}"
-        print(f"[ERROR] {error_msg}")
-        traceback.print_exc()
+        travel_logger.error(error_msg, task_id=wgp_task_id)
+        travel_logger.debug(traceback.format_exc(), task_id=wgp_task_id)
         
         # Notify orchestrator of chaining failure
         orchestrator_task_id_ref = chain_details.get("orchestrator_task_id_ref") if chain_details else None

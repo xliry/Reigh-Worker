@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from source.core.log import headless_logger
 from source.utils.prompt_utils import dprint
 from source.core.constants import BYTES_PER_KB as BYTES_PER_KIBIBYTE
 
@@ -64,15 +65,15 @@ def validate_lora_file(file_path: Path, filename: str) -> tuple[bool, str]:
 
                 if not has_lora_keys and len(keys) > LORA_FULL_MODEL_TENSOR_THRESHOLD:
                     # Might be a full model checkpoint rather than a LoRA
-                    print(f"[WARNING] {filename} appears to be a full model checkpoint ({len(keys)} tensors) rather than a LoRA")
+                    headless_logger.warning(f"{filename} appears to be a full model checkpoint ({len(keys)} tensors) rather than a LoRA")
                 elif not has_lora_keys:
-                    print(f"[WARNING] {filename} doesn't appear to contain LoRA weights (no lora_* keys found)")
+                    headless_logger.warning(f"{filename} doesn't appear to contain LoRA weights (no lora_* keys found)")
 
                 # Check for reasonable number of parameters
                 if len(keys) == 0:
                     return False, "Safetensors file contains no tensors"
                 elif len(keys) > LORA_EXCESSIVE_TENSOR_THRESHOLD:
-                    print(f"[WARNING] {filename} contains many tensors ({len(keys)}) - might be a full model")
+                    headless_logger.warning(f"{filename} contains many tensors ({len(keys)}) - might be a full model")
 
         except ImportError:
             dprint(f"[WARNING] safetensors not available for detailed validation of {filename}")
@@ -90,7 +91,7 @@ def validate_lora_file(file_path: Path, filename: str) -> tuple[bool, str]:
             if first_bytes.startswith(b'<!DOCTYPE html') or first_bytes.startswith(b'<html'):
                 return False, "File appears to be an HTML error page rather than a LoRA file"
     except OSError as e:
-        print(f"[WARNING] Could not read first bytes of {filename} for HTML check: {e}")
+        headless_logger.warning(f"Could not read first bytes of {filename} for HTML check: {e}")
 
     return True, f"File validated successfully ({file_size:,} bytes)"
 
@@ -170,7 +171,7 @@ def _apply_special_lora_settings(task_id: str, lora_type: str, lora_basename: st
     """
     Shared helper to apply special LoRA settings (CausVid, LightI2X, etc.) to ui_defaults.
     """
-    print(f"[Task ID: {task_id}] Applying {lora_type} LoRA settings.")
+    headless_logger.essential(f"Applying {lora_type} LoRA settings.", task_id=task_id)
 
     # [STEPS DEBUG] Add detailed debug for steps logic
     dprint(f"[STEPS DEBUG] {lora_type}: task_params_dict keys: {list(task_params_dict.keys())}")
@@ -184,13 +185,13 @@ def _apply_special_lora_settings(task_id: str, lora_type: str, lora_basename: st
     # Handle steps logic
     if "steps" in task_params_dict:
         ui_defaults["num_inference_steps"] = task_params_dict["steps"]
-        print(f"[Task ID: {task_id}] {lora_type} task using specified steps: {ui_defaults['num_inference_steps']}")
+        headless_logger.essential(f"{lora_type} task using specified steps: {ui_defaults['num_inference_steps']}", task_id=task_id)
     elif "num_inference_steps" in task_params_dict:
         ui_defaults["num_inference_steps"] = task_params_dict["num_inference_steps"]
-        print(f"[Task ID: {task_id}] {lora_type} task using specified num_inference_steps: {ui_defaults['num_inference_steps']}")
+        headless_logger.essential(f"{lora_type} task using specified num_inference_steps: {ui_defaults['num_inference_steps']}", task_id=task_id)
     else:
         ui_defaults["num_inference_steps"] = default_steps
-        print(f"[Task ID: {task_id}] {lora_type} task defaulting to steps: {ui_defaults['num_inference_steps']}")
+        headless_logger.essential(f"{lora_type} task defaulting to steps: {ui_defaults['num_inference_steps']}", task_id=task_id)
 
     # Set guidance and flow shift
     ui_defaults["guidance_scale"] = guidance_scale

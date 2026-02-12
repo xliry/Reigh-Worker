@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 import requests
 
+from source.core.log import headless_logger
 from source.utils.prompt_utils import dprint
 
 
@@ -39,13 +40,13 @@ def download_file(url, dest_folder, filename):
         if filename.endswith('.safetensors') or 'lora' in filename.lower():
             is_valid, validation_msg = validate_lora_file(dest_path, filename)
             if is_valid:
-                print(f"[INFO] File {filename} already exists and is valid in {dest_folder}. {validation_msg}")
+                headless_logger.essential(f"File {filename} already exists and is valid in {dest_folder}. {validation_msg}")
                 return True
             else:
-                print(f"[WARNING] Existing file {filename} failed validation ({validation_msg}). Re-downloading...")
+                headless_logger.warning(f"Existing file {filename} failed validation ({validation_msg}). Re-downloading...")
                 dest_path.unlink()
         else:
-            print(f"[INFO] File {filename} already exists in {dest_folder}.")
+            headless_logger.essential(f"File {filename} already exists in {dest_folder}.")
             return True
 
     # Use huggingface_hub for HuggingFace URLs for better reliability
@@ -63,7 +64,7 @@ def download_file(url, dest_folder, filename):
                 branch = path_parts[3] if len(path_parts) > 4 else "main"
                 hf_filename = '/'.join(path_parts[4:]) if len(path_parts) > 4 else filename
 
-                print(f"Downloading {filename} from HuggingFace repo {repo_id} using hf_hub_download...")
+                headless_logger.essential(f"Downloading {filename} from HuggingFace repo {repo_id} using hf_hub_download...")
 
                 # Download using huggingface_hub with automatic checksums and resumption
                 downloaded_path = hf_hub_download(
@@ -84,22 +85,22 @@ def download_file(url, dest_folder, filename):
                 if filename.endswith('.safetensors') or 'lora' in filename.lower():
                     is_valid, validation_msg = validate_lora_file(dest_path, filename)
                     if not is_valid:
-                        print(f"[ERROR] Downloaded file {filename} failed validation: {validation_msg}")
+                        headless_logger.error(f"Downloaded file {filename} failed validation: {validation_msg}")
                         dest_path.unlink(missing_ok=True)
                         return False
-                    print(f"Successfully downloaded and validated {filename}. {validation_msg}")
+                    headless_logger.essential(f"Successfully downloaded and validated {filename}. {validation_msg}")
                 else:
-                    print(f"Successfully downloaded {filename} with integrity verification.")
+                    headless_logger.essential(f"Successfully downloaded {filename} with integrity verification.")
                 return True
 
         except ImportError:
-            print(f"[WARNING] huggingface_hub not available, falling back to requests for {url}")
+            headless_logger.warning(f"huggingface_hub not available, falling back to requests for {url}")
         except (OSError, ValueError, requests.RequestException) as e:
-            print(f"[WARNING] HuggingFace download failed for {filename}: {e}, falling back to requests")
+            headless_logger.warning(f"HuggingFace download failed for {filename}: {e}, falling back to requests")
 
     # Fallback to requests with basic integrity checks
     try:
-        print(f"Downloading {filename} from {url} to {dest_folder}...")
+        headless_logger.essential(f"Downloading {filename} from {url} to {dest_folder}...")
         response = requests.get(url, stream=True)
         response.raise_for_status() # Raise an exception for HTTP errors
 
@@ -116,7 +117,7 @@ def download_file(url, dest_folder, filename):
         # Verify download integrity
         actual_size = dest_path.stat().st_size
         if expected_size > 0 and actual_size != expected_size:
-            print(f"[ERROR] Size mismatch for {filename}: expected {expected_size}, got {actual_size}")
+            headless_logger.error(f"Size mismatch for {filename}: expected {expected_size}, got {actual_size}")
             dest_path.unlink(missing_ok=True)
             return False
 
@@ -124,10 +125,10 @@ def download_file(url, dest_folder, filename):
         if filename.endswith('.safetensors') or 'lora' in filename.lower():
             is_valid, validation_msg = validate_lora_file(dest_path, filename)
             if not is_valid:
-                print(f"[ERROR] Downloaded file {filename} failed validation: {validation_msg}")
+                headless_logger.error(f"Downloaded file {filename} failed validation: {validation_msg}")
                 dest_path.unlink(missing_ok=True)
                 return False
-            print(f"Successfully downloaded and validated {filename}. {validation_msg}")
+            headless_logger.essential(f"Successfully downloaded and validated {filename}. {validation_msg}")
         else:
             # For non-LoRA safetensors files, do basic format check
             if filename.endswith('.safetensors'):
@@ -135,24 +136,24 @@ def download_file(url, dest_folder, filename):
                     import safetensors.torch as st
                     with st.safe_open(dest_path, framework="pt") as f:
                         pass  # Just verify it can be opened
-                    print(f"Successfully downloaded and verified safetensors file {filename}.")
+                    headless_logger.essential(f"Successfully downloaded and verified safetensors file {filename}.")
                 except ImportError:
                     dprint(f"[WARNING] safetensors not available for verification of {filename}")
                 except (OSError, ValueError, RuntimeError) as e:
-                    print(f"[ERROR] Downloaded safetensors file {filename} appears corrupted: {e}")
+                    headless_logger.error(f"Downloaded safetensors file {filename} appears corrupted: {e}")
                     dest_path.unlink(missing_ok=True)
                     return False
             else:
-                print(f"Successfully downloaded {filename}.")
+                headless_logger.essential(f"Successfully downloaded {filename}.")
 
         return True
 
     except (OSError, requests.RequestException, ValueError) as e:
-        print(f"[ERROR] Failed to download {filename}: {e}")
+        headless_logger.error(f"Failed to download {filename}: {e}")
         if dest_path.exists(): # Attempt to clean up partial download
             try: os.remove(dest_path)
             except OSError as e_cleanup:
-                print(f"[WARNING] Failed to clean up partial download {dest_path}: {e_cleanup}")
+                headless_logger.warning(f"Failed to clean up partial download {dest_path}: {e_cleanup}")
         return False
 
 

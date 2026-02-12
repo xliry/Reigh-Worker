@@ -9,6 +9,8 @@ from pathlib import Path
 
 from postgrest.exceptions import APIError
 
+from source.core.log import headless_logger
+
 from . import config as _cfg
 from .config import (
     STATUS_QUEUED,
@@ -81,7 +83,7 @@ def _mark_task_failed_via_edge_function(task_id_str: str, error_message: str):
     )
 
     if not edge_url:
-        print(f"[ERROR] No update-task-status edge function URL available for marking task {task_id_str} as failed")
+        headless_logger.error(f"No update-task-status edge function URL available for marking task {task_id_str} as failed", task_id=task_id_str)
         return
 
     headers = {"Content-Type": "application/json"}
@@ -107,9 +109,9 @@ def _mark_task_failed_via_edge_function(task_id_str: str, error_message: str):
     if resp and resp.status_code == 200:
         dprint(f"[DEBUG] Successfully marked task {task_id_str} as Failed via Edge Function")
     elif edge_error:
-        print(f"[ERROR] Failed to mark task {task_id_str} as Failed: {edge_error}")
+        headless_logger.error(f"Failed to mark task {task_id_str} as Failed: {edge_error}", task_id=task_id_str)
     elif resp:
-        print(f"[ERROR] Failed to mark task {task_id_str} as Failed: {resp.status_code} - {resp.text}")
+        headless_logger.error(f"Failed to mark task {task_id_str} as Failed: {resp.status_code} - {resp.text}", task_id=task_id_str)
 
 
 def requeue_task_for_retry(task_id_str: str, error_message: str, current_attempts: int, error_category: str = None) -> bool:
@@ -136,7 +138,7 @@ def requeue_task_for_retry(task_id_str: str, error_message: str, current_attempt
         error_details += f" ({error_category})"
     error_details += f": {error_message[:500]}" if error_message else ""
 
-    print(f"[RETRY] \U0001f504 Requeuing task {task_id_str} for retry (attempt {new_attempts})")
+    headless_logger.essential(f"Requeuing task {task_id_str} for retry (attempt {new_attempts})", task_id=task_id_str)
     dprint(f"[RETRY_DEBUG] Error category: {error_category}, Error: {error_message[:200] if error_message else 'N/A'}...")
 
     # Use edge function to update status back to Queued
@@ -146,7 +148,7 @@ def requeue_task_for_retry(task_id_str: str, error_message: str, current_attempt
     )
 
     if not edge_url:
-        print(f"[ERROR] No update-task-status edge function URL available for requeuing task {task_id_str}")
+        headless_logger.error(f"No update-task-status edge function URL available for requeuing task {task_id_str}", task_id=task_id_str)
         # Fallback to direct DB update
         return _requeue_task_direct_db(task_id_str, new_attempts, error_details)
 
@@ -173,14 +175,14 @@ def requeue_task_for_retry(task_id_str: str, error_message: str, current_attempt
     )
 
     if resp and resp.status_code == 200:
-        print(f"[RETRY] \u2705 Task {task_id_str} requeued for retry (attempt {new_attempts})")
+        headless_logger.essential(f"Task {task_id_str} requeued for retry (attempt {new_attempts})", task_id=task_id_str)
         return True
     elif edge_error:
-        print(f"[ERROR] Failed to requeue task {task_id_str}: {edge_error}")
+        headless_logger.error(f"Failed to requeue task {task_id_str}: {edge_error}", task_id=task_id_str)
         # Fallback to direct DB update
         return _requeue_task_direct_db(task_id_str, new_attempts, error_details)
     elif resp:
-        print(f"[ERROR] Failed to requeue task {task_id_str}: {resp.status_code} - {resp.text}")
+        headless_logger.error(f"Failed to requeue task {task_id_str}: {resp.status_code} - {resp.text}", task_id=task_id_str)
         # Fallback to direct DB update
         return _requeue_task_direct_db(task_id_str, new_attempts, error_details)
 
@@ -192,7 +194,7 @@ def _requeue_task_direct_db(task_id_str: str, new_attempts: int, error_details: 
     Fallback: Requeue task directly via Supabase client if edge function fails.
     """
     if not _cfg.SUPABASE_CLIENT:
-        print(f"[ERROR] No Supabase client available for direct DB requeue of task {task_id_str}")
+        headless_logger.error(f"No Supabase client available for direct DB requeue of task {task_id_str}", task_id=task_id_str)
         return False
 
     try:
@@ -205,13 +207,13 @@ def _requeue_task_direct_db(task_id_str: str, new_attempts: int, error_details: 
         }).eq("id", task_id_str).execute()
 
         if result.data:
-            print(f"[RETRY] \u2705 Task {task_id_str} requeued via direct DB (attempt {new_attempts})")
+            headless_logger.essential(f"Task {task_id_str} requeued via direct DB (attempt {new_attempts})", task_id=task_id_str)
             return True
         else:
-            print(f"[ERROR] Direct DB requeue returned no data for task {task_id_str}")
+            headless_logger.error(f"Direct DB requeue returned no data for task {task_id_str}", task_id=task_id_str)
             return False
     except (APIError, RuntimeError, ValueError, OSError) as e:
-        print(f"[ERROR] Direct DB requeue failed for task {task_id_str}: {e}")
+        headless_logger.error(f"Direct DB requeue failed for task {task_id_str}: {e}", task_id=task_id_str)
         return False
 
 
@@ -246,7 +248,7 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
     dprint(f"[DEBUG] update_task_status_supabase called: task_id={task_id_str}, status={status_str}, output_location={output_location_val}, thumbnail={thumbnail_url_val}")
 
     if not _cfg.SUPABASE_CLIENT:
-        print("[ERROR] Supabase client not initialized. Cannot update task status.")
+        headless_logger.error("Supabase client not initialized. Cannot update task status.", task_id=task_id_str)
         return
 
     # --- Use edge functions for ALL status updates ---
@@ -260,7 +262,7 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
         )
 
         if not edge_url:
-            print(f"[ERROR] No complete_task edge function URL available")
+            headless_logger.error(f"No complete_task edge function URL available", task_id=task_id_str)
             return
 
         try:
@@ -351,7 +353,7 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
                         return None
                     else:
                         error_msg = edge_error or f"{EDGE_FAIL_PREFIX}:complete_task:HTTP_{resp.status_code if resp else 'N/A'}] {resp.text[:200] if resp else 'No response'}"
-                        print(f"[ERROR] {error_msg}")
+                        headless_logger.error(error_msg, task_id=task_id_str)
                         _mark_task_failed_via_edge_function(task_id_str, f"Upload failed: {error_msg}")
                         return None
 
@@ -381,7 +383,7 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
                     if edge_error or not upload_url_resp or upload_url_resp.status_code != 200:
                         # Prefer standardized error from helper (avoids double-wrapping)
                         error_msg = edge_error or f"{EDGE_FAIL_PREFIX}:generate-upload-url:HTTP_{upload_url_resp.status_code if upload_url_resp else 'N/A'}] {upload_url_resp.text[:200] if upload_url_resp else 'No response'}"
-                        print(f"[ERROR] {error_msg}")
+                        headless_logger.error(error_msg, task_id=task_id_str)
                         _mark_task_failed_via_edge_function(task_id_str, f"Upload failed: {error_msg}")
                         return
 
@@ -433,7 +435,7 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
 
                     if put_error or not put_resp or put_resp.status_code not in [200, 201]:
                         error_msg = put_error or f"{EDGE_FAIL_PREFIX}:storage-upload-file:HTTP_{put_resp.status_code if put_resp else 'N/A'}] {put_resp.text[:200] if put_resp else 'No response'}"
-                        print(f"[ERROR] {error_msg}")
+                        headless_logger.error(error_msg, task_id=task_id_str)
                         _mark_task_failed_via_edge_function(task_id_str, f"Upload failed: {error_msg}")
                         return
 
@@ -480,7 +482,7 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
                         return None
                     else:
                         error_msg = edge_error or f"{EDGE_FAIL_PREFIX}:complete_task:HTTP_{resp.status_code if resp else 'N/A'}] {resp.text[:200] if resp else 'No response'}"
-                        print(f"[ERROR] {error_msg}")
+                        headless_logger.error(error_msg, task_id=task_id_str)
                         # Use update-task-status edge function to mark as failed
                         _mark_task_failed_via_edge_function(task_id_str, f"Upload failed: {error_msg}")
                         return None
@@ -567,7 +569,7 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
                                     return None
                                 else:
                                     error_msg = edge_error or f"{EDGE_FAIL_PREFIX}:complete_task:HTTP_{resp.status_code if resp else 'N/A'}] {resp.text[:200] if resp else 'No response'}"
-                                    print(f"[ERROR] {error_msg}")
+                                    headless_logger.error(error_msg, task_id=task_id_str)
                                     _mark_task_failed_via_edge_function(task_id_str, f"Completion failed: {error_msg}")
                                     return None
                     except json.JSONDecodeError:
@@ -647,12 +649,12 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
                         return output_location_val
                 else:
                     error_msg = edge_error or f"{EDGE_FAIL_PREFIX}:complete_task:HTTP_{resp.status_code if resp else 'N/A'}] {resp.text[:200] if resp else 'No response'}"
-                    print(f"[ERROR] {error_msg}")
+                    headless_logger.error(error_msg, task_id=task_id_str)
                     # Use update-task-status edge function to mark as failed
                     _mark_task_failed_via_edge_function(task_id_str, f"Completion failed: {error_msg}")
                     return None
         except (OSError, ValueError, RuntimeError) as e_edge:
-            print(f"[ERROR] complete_task edge function exception: {e_edge}")
+            headless_logger.error(f"complete_task edge function exception: {e_edge}", task_id=task_id_str)
             return None
     else:
         # Use update-task-status edge function for all other status updates (with retry)
@@ -662,7 +664,7 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
         )
 
         if not edge_url:
-            print(f"[ERROR] No update-task-status edge function URL available")
+            headless_logger.error(f"No update-task-status edge function URL available", task_id=task_id_str)
             return
 
         headers = {"Content-Type": "application/json"}
@@ -695,10 +697,10 @@ def update_task_status_supabase(task_id_str, status_str, output_location_val=Non
             dprint(f"[DEBUG] Edge function SUCCESS for task {task_id_str} \u2192 status {status_str}")
             return
         elif edge_error:
-            print(f"[ERROR] update-task-status edge function failed: {edge_error}")
+            headless_logger.error(f"update-task-status edge function failed: {edge_error}", task_id=task_id_str)
             return
         elif resp:
-            print(f"[ERROR] update-task-status edge function failed: {resp.status_code} - {resp.text}")
+            headless_logger.error(f"update-task-status edge function failed: {resp.status_code} - {resp.text}", task_id=task_id_str)
             return
 
 
@@ -802,7 +804,7 @@ def add_task_to_db(task_payload: dict, task_type_str: str, dependant_on: str | l
         raise RuntimeError(f"Edge Function create-task returned no response for {actual_db_row_id}")
 
     if resp.status_code == 200:
-        print(f"Task {actual_db_row_id} (Type: {task_type_str}) queued via Edge Function.")
+        headless_logger.essential(f"Task {actual_db_row_id} (Type: {task_type_str}) queued via Edge Function.", task_id=actual_db_row_id)
 
         # Verify task visibility and status to catch race conditions
         if _cfg.SUPABASE_CLIENT:
@@ -823,13 +825,13 @@ def add_task_to_db(task_payload: dict, task_type_str: str, dependant_on: str | l
                         dprint(f"[VERIFY] Task {actual_db_row_id} found after {elapsed:.2f}s: status={status}, project_id={db_project_id}, task_type={db_task_type}, created_at={created_at}")
 
                         if status == STATUS_QUEUED:
-                            print(f"[VERIFY] \u2705 Task {actual_db_row_id} verified visible and Queued (took {elapsed:.2f}s)")
+                            headless_logger.essential(f"[VERIFY] Task {actual_db_row_id} verified visible and Queued (took {elapsed:.2f}s)", task_id=actual_db_row_id)
                             break
                         elif status == STATUS_IN_PROGRESS:
-                            print(f"[VERIFY] \u26a0\ufe0f  Task {actual_db_row_id} already In Progress (claimed in {elapsed:.2f}s - unusually fast)")
+                            headless_logger.warning(f"[VERIFY] Task {actual_db_row_id} already In Progress (claimed in {elapsed:.2f}s - unusually fast)", task_id=actual_db_row_id)
                             break
                         else:
-                            print(f"[VERIFY] \u26a0\ufe0f  Task {actual_db_row_id} has unexpected status '{status}' after {elapsed:.2f}s")
+                            headless_logger.warning(f"[VERIFY] Task {actual_db_row_id} has unexpected status '{status}' after {elapsed:.2f}s", task_id=actual_db_row_id)
                             break
                     else:
                         dprint(f"[VERIFY] Attempt {attempt+1}/{max_verify_retries}: Task {actual_db_row_id} not visible yet (no data returned)")
@@ -845,14 +847,14 @@ def add_task_to_db(task_payload: dict, task_type_str: str, dependant_on: str | l
             else:
                 # Verification failed after all retries
                 elapsed = time.time() - verify_start_time
-                print(f"[WARN] \u26a0\ufe0f  Task {actual_db_row_id} creation confirmed by Edge Function but NOT VISIBLE in DB after {max_verify_retries} attempts ({elapsed:.2f}s)")
-                print(f"[WARN] This is likely due to database replication lag. The task IS CREATED and will be processed when visible.")
+                headless_logger.warning(f"Task {actual_db_row_id} creation confirmed by Edge Function but NOT VISIBLE in DB after {max_verify_retries} attempts ({elapsed:.2f}s)", task_id=actual_db_row_id)
+                headless_logger.warning(f"This is likely due to database replication lag. The task IS CREATED and will be processed when visible.", task_id=actual_db_row_id)
                 dprint(f"[WARN] Task details: type={task_type_str}, project_id={project_id}, dependant_on={dependant_on}")
 
         return actual_db_row_id
     else:
         error_msg = f"Edge Function create-task failed: {resp.status_code} - {resp.text}"
-        print(f"[ERROR] \u274c {error_msg}")
+        headless_logger.error(error_msg, task_id=actual_db_row_id)
         raise RuntimeError(error_msg)
 
 
@@ -860,7 +862,7 @@ def mark_task_failed_supabase(task_id_str, error_message):
     """Marks a task as Failed with an error message using direct database update."""
     dprint(f"Marking task {task_id_str} as Failed with message: {error_message}")
     if not _cfg.SUPABASE_CLIENT:
-        print("[ERROR] Supabase client not initialized. Cannot mark task failed.")
+        headless_logger.error("Supabase client not initialized. Cannot mark task failed.", task_id=task_id_str)
         return
 
     # Use the standard update function which now uses direct database updates for non-COMPLETE statuses
@@ -887,7 +889,7 @@ def reset_generation_started_at(task_id_str: str) -> bool:
     )
 
     if not edge_url:
-        print(f"[ERROR] No update-task-status edge function URL available for resetting generation_started_at")
+        headless_logger.error(f"No update-task-status edge function URL available for resetting generation_started_at", task_id=task_id_str)
         return False
 
     headers = {"Content-Type": "application/json"}
@@ -901,7 +903,7 @@ def reset_generation_started_at(task_id_str: str) -> bool:
         "reset_generation_started_at": True
     }
 
-    print(f"[BILLING] Resetting generation_started_at for task {task_id_str} (model loading complete)")
+    headless_logger.essential(f"[BILLING] Resetting generation_started_at for task {task_id_str} (model loading complete)", task_id=task_id_str)
 
     resp, edge_error = _call_edge_function_with_retry(
         edge_url=edge_url,
@@ -914,13 +916,13 @@ def reset_generation_started_at(task_id_str: str) -> bool:
     )
 
     if resp and resp.status_code == 200:
-        print(f"[BILLING] \u2705 Successfully reset generation_started_at for task {task_id_str}")
+        headless_logger.essential(f"[BILLING] Successfully reset generation_started_at for task {task_id_str}", task_id=task_id_str)
         return True
     elif edge_error:
-        print(f"[ERROR] Failed to reset generation_started_at for task {task_id_str}: {edge_error}")
+        headless_logger.error(f"Failed to reset generation_started_at for task {task_id_str}: {edge_error}", task_id=task_id_str)
         return False
     elif resp:
-        print(f"[ERROR] Failed to reset generation_started_at for task {task_id_str}: {resp.status_code} - {resp.text}")
+        headless_logger.error(f"Failed to reset generation_started_at for task {task_id_str}: {resp.status_code} - {resp.text}", task_id=task_id_str)
         return False
 
     return False

@@ -1,6 +1,5 @@
 """VLM prompt generation for transitions and single images."""
 
-import logging
 import sys
 from pathlib import Path
 from typing import Optional, List, Tuple
@@ -8,10 +7,9 @@ from PIL import Image
 import torch
 
 from source.core.constants import BYTES_PER_GB
+from source.core.log import headless_logger
 from source.media.vlm.image_prep import create_framed_vlm_image, create_labeled_debug_image
 from source.media.vlm.model import download_qwen_vlm_if_needed
-
-logger = logging.getLogger(__name__)
 
 
 def generate_transition_prompt(
@@ -354,29 +352,29 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
 
         if torch.cuda.is_available():
             gpu_mem_before_cleanup = torch.cuda.memory_allocated() / BYTES_PER_GB
-            print(f"[VLM_CLEANUP] GPU memory BEFORE cleanup: {gpu_mem_before_cleanup:.2f} GB")
+            headless_logger.debug(f"[VLM_CLEANUP] GPU memory BEFORE cleanup: {gpu_mem_before_cleanup:.2f} GB")
 
-        print(f"[VLM_CLEANUP] Cleaning up VLM model and processor...")
+        headless_logger.debug(f"[VLM_CLEANUP] Cleaning up VLM model and processor...")
         try:
             del extender.model
             del extender.processor
             del extender
-            print(f"[VLM_CLEANUP] \u2705 Successfully deleted VLM objects")
+            headless_logger.essential(f"[VLM_CLEANUP] Successfully deleted VLM objects")
         except AttributeError as e:
-            print(f"[VLM_CLEANUP] Warning: Error during deletion: {e}")
+            headless_logger.warning(f"[VLM_CLEANUP] Error during deletion: {e}")
 
         import gc
         collected = gc.collect()
-        print(f"[VLM_CLEANUP] Garbage collected {collected} objects")
+        headless_logger.debug(f"[VLM_CLEANUP] Garbage collected {collected} objects")
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             gpu_mem_after = torch.cuda.memory_allocated() / BYTES_PER_GB
             gpu_freed = gpu_mem_before_cleanup - gpu_mem_after
-            print(f"[VLM_CLEANUP] GPU memory AFTER cleanup: {gpu_mem_after:.2f} GB")
-            print(f"[VLM_CLEANUP] GPU memory freed: {gpu_freed:.2f} GB")
+            headless_logger.debug(f"[VLM_CLEANUP] GPU memory AFTER cleanup: {gpu_mem_after:.2f} GB")
+            headless_logger.debug(f"[VLM_CLEANUP] GPU memory freed: {gpu_freed:.2f} GB")
 
-        print(f"[VLM_CLEANUP] \u2705 VLM cleanup complete")
+        headless_logger.essential(f"[VLM_CLEANUP] VLM cleanup complete")
 
         return results
 
@@ -475,7 +473,7 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
             del extender.processor
             del extender
         except AttributeError as e:
-            logger.warning("[VLM_SINGLE] Could not delete VLM objects during cleanup: %s", e)
+            headless_logger.warning(f"[VLM_SINGLE] Could not delete VLM objects during cleanup: {e}")
 
         import gc
         gc.collect()
@@ -609,29 +607,29 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
 
         if torch.cuda.is_available():
             gpu_mem_before_cleanup = torch.cuda.memory_allocated() / BYTES_PER_GB
-            print(f"[VLM_SINGLE_CLEANUP] GPU memory BEFORE cleanup: {gpu_mem_before_cleanup:.2f} GB")
+            headless_logger.debug(f"[VLM_SINGLE_CLEANUP] GPU memory BEFORE cleanup: {gpu_mem_before_cleanup:.2f} GB")
 
-        print(f"[VLM_SINGLE_CLEANUP] Cleaning up VLM model and processor...")
+        headless_logger.debug(f"[VLM_SINGLE_CLEANUP] Cleaning up VLM model and processor...")
         try:
             del extender.model
             del extender.processor
             del extender
-            print(f"[VLM_SINGLE_CLEANUP] \u2705 Successfully deleted VLM objects")
+            headless_logger.essential(f"[VLM_SINGLE_CLEANUP] Successfully deleted VLM objects")
         except AttributeError as e:
-            print(f"[VLM_SINGLE_CLEANUP] Warning: Error during deletion: {e}")
+            headless_logger.warning(f"[VLM_SINGLE_CLEANUP] Error during deletion: {e}")
 
         import gc
         collected = gc.collect()
-        print(f"[VLM_SINGLE_CLEANUP] Garbage collected {collected} objects")
+        headless_logger.debug(f"[VLM_SINGLE_CLEANUP] Garbage collected {collected} objects")
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             gpu_mem_after = torch.cuda.memory_allocated() / BYTES_PER_GB
             gpu_freed = gpu_mem_before_cleanup - gpu_mem_after
-            print(f"[VLM_SINGLE_CLEANUP] GPU memory AFTER cleanup: {gpu_mem_after:.2f} GB")
-            print(f"[VLM_SINGLE_CLEANUP] GPU memory freed: {gpu_freed:.2f} GB")
+            headless_logger.debug(f"[VLM_SINGLE_CLEANUP] GPU memory AFTER cleanup: {gpu_mem_after:.2f} GB")
+            headless_logger.debug(f"[VLM_SINGLE_CLEANUP] GPU memory freed: {gpu_freed:.2f} GB")
 
-        print(f"[VLM_SINGLE_CLEANUP] \u2705 VLM cleanup complete")
+        headless_logger.essential(f"[VLM_SINGLE_CLEANUP] VLM cleanup complete")
 
         return results
 
@@ -644,15 +642,15 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
 
 def test_vlm_transition():
     """Test function for VLM transition prompt generation."""
-    print("\n" + "="*80)
-    print("Testing VLM Transition Prompt Generation")
-    print("="*80 + "\n")
+    headless_logger.essential("\n" + "="*80)
+    headless_logger.essential("Testing VLM Transition Prompt Generation")
+    headless_logger.essential("="*80 + "\n")
 
-    print("To test, call:")
-    print("  generate_transition_prompt('path/to/start.jpg', 'path/to/end.jpg')")
-    print("\nExample usage in travel orchestrator:")
-    print("  if orchestrator_payload.get('enhance_prompt', False):")
-    print("      prompt = generate_transition_prompt(start_img, end_img, base_prompt)")
+    headless_logger.essential("To test, call:")
+    headless_logger.essential("  generate_transition_prompt('path/to/start.jpg', 'path/to/end.jpg')")
+    headless_logger.essential("\nExample usage in travel orchestrator:")
+    headless_logger.essential("  if orchestrator_payload.get('enhance_prompt', False):")
+    headless_logger.essential("      prompt = generate_transition_prompt(start_img, end_img, base_prompt)")
 
 
 if __name__ == "__main__":

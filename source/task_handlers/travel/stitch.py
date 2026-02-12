@@ -57,9 +57,9 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
         # Support both canonical (orchestrator_details) and legacy (full_orchestrator_payload) names
         full_orchestrator_payload = stitch_params.get("orchestrator_details") or stitch_params.get("full_orchestrator_payload")
 
-        print(f"[IMMEDIATE DEBUG] orchestrator_run_id: {orchestrator_run_id}")
-        print(f"[IMMEDIATE DEBUG] orchestrator_task_id_ref: {orchestrator_task_id_ref}")
-        print(f"[IMMEDIATE DEBUG] full_orchestrator_payload present: {full_orchestrator_payload is not None}")
+        travel_logger.debug(f"orchestrator_run_id: {orchestrator_run_id}", task_id=stitch_task_id_str)
+        travel_logger.debug(f"orchestrator_task_id_ref: {orchestrator_task_id_ref}", task_id=stitch_task_id_str)
+        travel_logger.debug(f"full_orchestrator_payload present: {full_orchestrator_payload is not None}", task_id=stitch_task_id_str)
 
         if not all([orchestrator_task_id_ref, orchestrator_run_id, full_orchestrator_payload]):
             msg = f"Stitch task {stitch_task_id_str} missing critical orchestrator refs or orchestrator_details."
@@ -77,7 +77,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
         dprint(f"Stitch Task {stitch_task_id_str}: Processing in {stitch_processing_dir.resolve()}")
 
         num_expected_new_segments = full_orchestrator_payload["num_new_segments_to_generate"]
-        print(f"[IMMEDIATE DEBUG] num_expected_new_segments: {num_expected_new_segments}")
+        travel_logger.debug(f"num_expected_new_segments: {num_expected_new_segments}", task_id=stitch_task_id_str)
         
         # Parse resolution from payload - but DON'T snap to model grid yet!
         # The actual resolution will be determined from the input segment videos.
@@ -90,7 +90,8 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
             # NOTE: We use this as a fallback only. Actual resolution comes from input videos.
         except (ValueError, KeyError, TypeError) as e_parse_res_stitch:
             msg = f"Stitch Task {stitch_task_id_str}: Invalid format or error parsing parsed_resolution_wh '{parsed_res_wh_str}': {e_parse_res_stitch}"
-            print(f"[ERROR Task {stitch_task_id_str}]: {msg}"); return False, msg
+            travel_logger.error(msg, task_id=stitch_task_id_str)
+            return False, msg
         dprint(f"Stitch Task {stitch_task_id_str}: Payload resolution (w,h): {parsed_res_wh_from_payload} (will use actual video resolution)")
         
         # Placeholder - will be set from actual input video after loading
@@ -134,32 +135,32 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
         max_stitch_fetch_retries = 6  # Allow up to ~18s total wait
         completed_segment_outputs_from_db = []
         
-        print(f"[IMMEDIATE DEBUG] About to start retry loop for run_id: {orchestrator_run_id}")
+        travel_logger.debug(f"About to start retry loop for run_id: {orchestrator_run_id}", task_id=stitch_task_id_str)
         
         for attempt in range(max_stitch_fetch_retries):
-            print(f"[IMMEDIATE DEBUG] Stitch fetch attempt {attempt+1}/{max_stitch_fetch_retries} for run_id: {orchestrator_run_id}")
+            travel_logger.debug(f"Stitch fetch attempt {attempt+1}/{max_stitch_fetch_retries} for run_id: {orchestrator_run_id}", task_id=stitch_task_id_str)
             dprint(f"[DEBUG] Stitch fetch attempt {attempt+1}/{max_stitch_fetch_retries} for run_id: {orchestrator_run_id}")
             
             try:
                 completed_segment_outputs_from_db = db_ops.get_completed_segment_outputs_for_stitch(orchestrator_run_id, project_id=project_id_for_stitch) or []
-                print(f"[IMMEDIATE DEBUG] DB query returned: {completed_segment_outputs_from_db}")
+                travel_logger.debug(f"DB query returned: {completed_segment_outputs_from_db}", task_id=stitch_task_id_str)
             except (RuntimeError, ValueError, OSError) as e_db_query:
-                print(f"[IMMEDIATE DEBUG] DB query failed: {e_db_query}")
+                travel_logger.error(f"DB query failed: {e_db_query}", task_id=stitch_task_id_str)
                 completed_segment_outputs_from_db = []
             
             dprint(f"[DEBUG] Attempt {attempt+1} returned {len(completed_segment_outputs_from_db)} segments")
-            print(f"[IMMEDIATE DEBUG] Attempt {attempt+1} returned {len(completed_segment_outputs_from_db)} segments")
+            travel_logger.debug(f"Attempt {attempt+1} returned {len(completed_segment_outputs_from_db)} segments", task_id=stitch_task_id_str)
             
             if len(completed_segment_outputs_from_db) >= num_expected_new_segments:
                 dprint(f"[DEBUG] Expected {num_expected_new_segments} segment rows found on attempt {attempt+1}. Proceeding.")
-                print(f"[IMMEDIATE DEBUG] Expected {num_expected_new_segments} segment rows found on attempt {attempt+1}. Proceeding.")
+                travel_logger.debug(f"Expected {num_expected_new_segments} segment rows found on attempt {attempt+1}. Proceeding.", task_id=stitch_task_id_str)
                 break
             dprint(f"Stitch: No completed segment rows found (attempt {attempt+1}/{max_stitch_fetch_retries}). Waiting 3s and retrying...")
-            print(f"[IMMEDIATE DEBUG] Insufficient segments found (attempt {attempt+1}/{max_stitch_fetch_retries}). Waiting 3s and retrying...")
+            travel_logger.debug(f"Insufficient segments found (attempt {attempt+1}/{max_stitch_fetch_retries}). Waiting 3s and retrying...", task_id=stitch_task_id_str)
             if attempt < max_stitch_fetch_retries - 1:  # Don't sleep after the last attempt
                 time.sleep(3)
         dprint(f"Stitch Task {stitch_task_id_str}: Completed segments fetched: {completed_segment_outputs_from_db}")
-        print(f"[IMMEDIATE DEBUG] Final completed_segment_outputs_from_db: {completed_segment_outputs_from_db}")
+        travel_logger.debug(f"Final completed_segment_outputs_from_db: {completed_segment_outputs_from_db}", task_id=stitch_task_id_str)
 
         # ------------------------------------------------------------------
         # 2b. Resolve each returned video path (relative path or URL)
@@ -180,93 +181,93 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                 # Resolve relative to current working directory
                 base_dir = Path.cwd()
                 absolute_path_candidate = (base_dir / "public" / video_path_str_from_db.lstrip("public/")).resolve()
-                print(f"[STITCH_DEBUG] Resolved relative path '{video_path_str_from_db}' to '{absolute_path_candidate}' for segment {seg_idx}")
+                travel_logger.debug(f"Resolved relative path '{video_path_str_from_db}' to '{absolute_path_candidate}' for segment {seg_idx}", task_id=stitch_task_id_str)
                 dprint(f"Stitch: Resolved relative path '{video_path_str_from_db}' to '{absolute_path_candidate}' for segment {seg_idx}")
                 if absolute_path_candidate.exists() and absolute_path_candidate.is_file():
                     resolved_video_path_for_stitch = absolute_path_candidate
-                    print(f"[STITCH_DEBUG] ✅ File exists at resolved path")
+                    travel_logger.debug(f"File exists at resolved path for segment {seg_idx}", task_id=stitch_task_id_str)
                 else:
-                    print(f"[STITCH_DEBUG] ❌ File missing at resolved path")
+                    travel_logger.debug(f"File missing at resolved path for segment {seg_idx}", task_id=stitch_task_id_str)
                     dprint(f"[WARNING] Stitch: Resolved absolute path '{absolute_path_candidate}' for segment {seg_idx} is missing.")
 
             # Case B: Remote public URL (Supabase storage)
             elif video_path_str_from_db.startswith("http"):
-                print(f"[STITCH_DEBUG] Case B: Remote URL detected for segment {seg_idx}")
+                travel_logger.debug(f"Case B: Remote URL detected for segment {seg_idx}", task_id=stitch_task_id_str)
                 try:
                     from ...utils import download_file as download_file
                     remote_url = video_path_str_from_db
                     local_filename = Path(remote_url).name
                     local_download_path = stitch_processing_dir / f"seg{seg_idx:02d}_{local_filename}"
-                    print(f"[STITCH_DEBUG] Remote URL: {remote_url}")
-                    print(f"[STITCH_DEBUG] Local download path: {local_download_path}")
+                    travel_logger.debug(f"Remote URL: {remote_url}", task_id=stitch_task_id_str)
+                    travel_logger.debug(f"Local download path: {local_download_path}", task_id=stitch_task_id_str)
                     dprint(f"[DEBUG] Remote URL detected, local download path: {local_download_path}")
                     
                     # Check if cached file exists and validate its frame count against orchestrator's expected values
                     need_download = True
                     if local_download_path.exists():
-                        print(f"[STITCH_DEBUG] Local copy exists, validating frame count...")
+                        travel_logger.debug(f"Local copy exists for segment {seg_idx}, validating frame count...", task_id=stitch_task_id_str)
                         try:
                             cached_frames, _ = get_video_frame_count_and_fps(str(local_download_path))
                             expected_segment_frames = full_orchestrator_payload["segment_frames_expanded"]
                             expected_frames = expected_segment_frames[seg_idx] if seg_idx < len(expected_segment_frames) else None
-                            print(f"[STITCH_DEBUG] Cached file has {cached_frames} frames (expected: {expected_frames})")
+                            travel_logger.debug(f"Cached file has {cached_frames} frames (expected: {expected_frames})", task_id=stitch_task_id_str)
                             
                             if expected_frames and cached_frames == expected_frames:
-                                print(f"[STITCH_DEBUG] ✅ Cached file frame count matches expected ({cached_frames} frames)")
+                                travel_logger.debug(f"Cached file frame count matches expected ({cached_frames} frames)", task_id=stitch_task_id_str)
                                 need_download = False
                             elif expected_frames:
-                                print(f"[STITCH_DEBUG] ❌ Cached file frame count mismatch! Expected {expected_frames}, got {cached_frames}, will re-download")
+                                travel_logger.debug(f"Cached file frame count mismatch! Expected {expected_frames}, got {cached_frames}, will re-download", task_id=stitch_task_id_str)
                             else:
-                                print(f"[STITCH_DEBUG] ❌ No expected frame count available for segment {seg_idx}, will re-download")
+                                travel_logger.debug(f"No expected frame count available for segment {seg_idx}, will re-download", task_id=stitch_task_id_str)
                         except (OSError, ValueError, RuntimeError, KeyError, IndexError) as e_validate:
-                            print(f"[STITCH_DEBUG] Could not validate cached file: {e_validate}, will re-download")
+                            travel_logger.debug(f"Could not validate cached file: {e_validate}, will re-download", task_id=stitch_task_id_str)
                     
                     if need_download:
-                        print(f"[STITCH_DEBUG] Downloading remote segment {seg_idx}...")
+                        travel_logger.debug(f"Downloading remote segment {seg_idx}...", task_id=stitch_task_id_str)
                         dprint(f"Stitch: Downloading remote segment {seg_idx} from {remote_url} to {local_download_path}")
                         # Remove stale cached file if it exists
                         if local_download_path.exists():
                             local_download_path.unlink()
                         download_file(remote_url, stitch_processing_dir, local_download_path.name)
-                        print(f"[STITCH_DEBUG] ✅ Download completed for segment {seg_idx}")
+                        travel_logger.debug(f"Download completed for segment {seg_idx}", task_id=stitch_task_id_str)
                         dprint(f"[DEBUG] Download completed for segment {seg_idx}")
                     else:
-                        print(f"[STITCH_DEBUG] ✅ Using validated cached file for segment {seg_idx}")
+                        travel_logger.debug(f"Using validated cached file for segment {seg_idx}", task_id=stitch_task_id_str)
                         dprint(f"Stitch: Using validated cached file for segment {seg_idx} at {local_download_path}")
                     
                     resolved_video_path_for_stitch = local_download_path
                 except (OSError, ValueError, RuntimeError) as e_dl:
-                    print(f"[STITCH_DEBUG] ❌ Download failed for segment {seg_idx}: {e_dl}")
+                    travel_logger.error(f"Download failed for segment {seg_idx}: {e_dl}", task_id=stitch_task_id_str)
                     dprint(f"[WARNING] Stitch: Failed to download remote video for segment {seg_idx}: {e_dl}")
 
             # Case C: Provided absolute/local path
             else:
-                print(f"[STITCH_DEBUG] Case C: Absolute/local path for segment {seg_idx}")
+                travel_logger.debug(f"Case C: Absolute/local path for segment {seg_idx}", task_id=stitch_task_id_str)
                 absolute_path_candidate = Path(video_path_str_from_db).resolve()
-                print(f"[STITCH_DEBUG] Treating as absolute path: {absolute_path_candidate}")
+                travel_logger.debug(f"Treating as absolute path: {absolute_path_candidate}", task_id=stitch_task_id_str)
                 dprint(f"[DEBUG] Treating as absolute path: {absolute_path_candidate}")
                 if absolute_path_candidate.exists() and absolute_path_candidate.is_file():
                     resolved_video_path_for_stitch = absolute_path_candidate
-                    print(f"[STITCH_DEBUG] ✅ Absolute path exists")
+                    travel_logger.debug(f"Absolute path exists: {absolute_path_candidate}", task_id=stitch_task_id_str)
                     dprint(f"[DEBUG] Absolute path exists: {absolute_path_candidate}")
                 else:
-                    print(f"[STITCH_DEBUG] ❌ Absolute path missing or not a file")
+                    travel_logger.debug(f"Absolute path missing or not a file: {absolute_path_candidate}", task_id=stitch_task_id_str)
                     dprint(f"[WARNING] Stitch: Absolute path '{absolute_path_candidate}' for segment {seg_idx} does not exist or is not a file.")
 
             if resolved_video_path_for_stitch is not None:
                 segment_video_paths_for_stitch.append(str(resolved_video_path_for_stitch))
-                print(f"[STITCH_DEBUG] ✅ Added video for segment {seg_idx}: {resolved_video_path_for_stitch}")
+                travel_logger.debug(f"Added video for segment {seg_idx}: {resolved_video_path_for_stitch}", task_id=stitch_task_id_str)
                 dprint(f"Stitch: Added video for segment {seg_idx}: {resolved_video_path_for_stitch}")
                 
                 # Analyze the resolved video immediately
                 debug_video_analysis(resolved_video_path_for_stitch, f"RESOLVED_Seg{seg_idx}", stitch_task_id_str)
             else: 
-                print(f"[STITCH_DEBUG] ❌ Unable to resolve video for segment {seg_idx}; will be excluded from stitching.")
+                travel_logger.warning(f"Unable to resolve video for segment {seg_idx}; will be excluded from stitching.", task_id=stitch_task_id_str)
                 dprint(f"[WARNING] Stitch: Unable to resolve video for segment {seg_idx}; will be excluded from stitching.")
 
-        print(f"[STITCH_DEBUG] Path resolution complete")
-        print(f"[STITCH_DEBUG] Final segment_video_paths_for_stitch: {segment_video_paths_for_stitch}")
-        print(f"[STITCH_DEBUG] Total videos collected: {len(segment_video_paths_for_stitch)}")
+        travel_logger.debug(f"Path resolution complete", task_id=stitch_task_id_str)
+        travel_logger.debug(f"Final segment_video_paths_for_stitch: {segment_video_paths_for_stitch}", task_id=stitch_task_id_str)
+        travel_logger.debug(f"Total videos collected: {len(segment_video_paths_for_stitch)}", task_id=stitch_task_id_str)
         dprint(f"[DEBUG] Final segment_video_paths_for_stitch: {segment_video_paths_for_stitch}")
         dprint(f"[DEBUG] Total videos collected: {len(segment_video_paths_for_stitch)}")
         # [CRITICAL DEBUG] Log each video's frame count before stitching
@@ -307,19 +308,19 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                 actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 cap.release()
                 parsed_res_wh = (actual_width, actual_height)
-                print(f"[STITCH_RESOLUTION] Using actual video resolution: {actual_width}x{actual_height}")
+                travel_logger.debug(f"Using actual video resolution: {actual_width}x{actual_height}", task_id=stitch_task_id_str)
                 dprint(f"Stitch: Using actual video resolution from first segment: {actual_width}x{actual_height}")
                 
                 # Log if there's a difference from payload resolution
                 if parsed_res_wh_from_payload and parsed_res_wh != parsed_res_wh_from_payload:
-                    print(f"[STITCH_RESOLUTION] ⚠️  Payload resolution was {parsed_res_wh_from_payload}, actual is {parsed_res_wh}")
+                    travel_logger.debug(f"Payload resolution was {parsed_res_wh_from_payload}, actual is {parsed_res_wh}", task_id=stitch_task_id_str)
                     dprint(f"Stitch: Resolution difference - payload: {parsed_res_wh_from_payload}, actual: {parsed_res_wh}")
             else:
                 cap.release()
                 raise ValueError(f"Could not open first video: {first_video_path}")
         except (OSError, ValueError, RuntimeError) as e_res:
             # Fallback to payload resolution (without snapping) if we can't read the video
-            print(f"[STITCH_RESOLUTION] ⚠️  Could not read resolution from video, using payload: {e_res}")
+            travel_logger.warning(f"Could not read resolution from video, using payload: {e_res}", task_id=stitch_task_id_str)
             dprint(f"Stitch: Warning - could not get resolution from video ({e_res}), using payload resolution")
             parsed_res_wh = parsed_res_wh_from_payload
 
@@ -368,37 +369,34 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
             )
 
             if any_positive_overlap:
-                print(f"[CRITICAL DEBUG] Using cross-fade due to overlap values: {actual_overlaps_for_stitching}. Output to: {path_for_raw_stitched_video}")
-                print(f"[STITCH_ANALYSIS] Cross-fade stitching analysis:")
-                print(f"[STITCH_ANALYSIS]   Number of videos: {len(segment_video_paths_for_stitch)}")
-                print(f"[STITCH_ANALYSIS]   Overlap values: {actual_overlaps_for_stitching}")
-                print(f"[STITCH_ANALYSIS]   Expected stitch points: {num_stitch_points}")
+                travel_logger.debug(f"Using cross-fade due to overlap values: {actual_overlaps_for_stitching}. Output to: {path_for_raw_stitched_video}", task_id=stitch_task_id_str)
+                travel_logger.debug(f"Cross-fade stitching analysis: Number of videos: {len(segment_video_paths_for_stitch)}, Overlap values: {actual_overlaps_for_stitching}, Expected stitch points: {num_stitch_points}", task_id=stitch_task_id_str)
                 
                 dprint(f"Stitch: Using cross-fade due to overlap values: {actual_overlaps_for_stitching}. Output to: {path_for_raw_stitched_video}")
 
                 # Wait for all segment videos to be stable before extracting frames
-                print(f"[CRITICAL DEBUG] Waiting for {len(segment_video_paths_for_stitch)} segment videos to be stable before frame extraction...")
+                travel_logger.debug(f"Waiting for {len(segment_video_paths_for_stitch)} segment videos to be stable before frame extraction...", task_id=stitch_task_id_str)
                 stable_paths = []
                 for idx, video_path in enumerate(segment_video_paths_for_stitch):
                     dprint(f"Stitch: Checking file stability for segment {idx}: {video_path}")
                     if not Path(video_path).exists():
-                        print(f"[CRITICAL DEBUG] Segment {idx} video file does not exist: {video_path}")
+                        travel_logger.debug(f"Segment {idx} video file does not exist: {video_path}", task_id=stitch_task_id_str)
                         stable_paths.append(False)
                         continue
 
                     file_stable = wait_for_file_stable(video_path, checks=5, interval=1.0, dprint=dprint)
                     if file_stable:
-                        print(f"[CRITICAL DEBUG] Segment {idx} video file is stable: {video_path}")
+                        travel_logger.debug(f"Segment {idx} video file is stable: {video_path}", task_id=stitch_task_id_str)
                         stable_paths.append(True)
                     else:
-                        print(f"[CRITICAL DEBUG] Segment {idx} video file is NOT stable after waiting: {video_path}")
+                        travel_logger.debug(f"Segment {idx} video file is NOT stable after waiting: {video_path}", task_id=stitch_task_id_str)
                         stable_paths.append(False)
 
                 if not all(stable_paths):
                     unstable_indices = [i for i, stable in enumerate(stable_paths) if not stable]
                     raise ValueError(f"Stitch: One or more segment videos are not stable or missing: indices {unstable_indices}")
 
-                print(f"[CRITICAL DEBUG] All segment videos are stable. Proceeding with frame extraction...")
+                travel_logger.debug(f"All segment videos are stable. Proceeding with frame extraction...", task_id=stitch_task_id_str)
 
                 # Retry frame extraction with backoff and re-download for corrupted videos
                 max_extraction_attempts = 3
@@ -406,20 +404,20 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                 retry_log = []  # Track all retry attempts for detailed error reporting
 
                 for attempt in range(max_extraction_attempts):
-                    print(f"[CRITICAL DEBUG] Frame extraction attempt {attempt + 1}/{max_extraction_attempts}")
+                    travel_logger.debug(f"Frame extraction attempt {attempt + 1}/{max_extraction_attempts}", task_id=stitch_task_id_str)
                     attempt_start_time = time.time()
                     all_segment_frames_lists = [extract_frames_from_video(p, dprint_func=dprint) for p in segment_video_paths_for_stitch]
 
                     # [CRITICAL DEBUG] Log frame extraction results
-                    print(f"[CRITICAL DEBUG] Frame extraction results (attempt {attempt + 1}):")
+                    travel_logger.debug(f"Frame extraction results (attempt {attempt + 1}):", task_id=stitch_task_id_str)
                     failed_segments = []
                     successful_segments = []
                     for idx, frame_list in enumerate(all_segment_frames_lists):
                         if frame_list is not None and len(frame_list) > 0:
-                            print(f"[CRITICAL DEBUG] Segment {idx}: {len(frame_list)} frames extracted")
+                            travel_logger.debug(f"Segment {idx}: {len(frame_list)} frames extracted", task_id=stitch_task_id_str)
                             successful_segments.append(idx)
                         else:
-                            print(f"[CRITICAL DEBUG] Segment {idx}: FAILED to extract frames")
+                            travel_logger.debug(f"Segment {idx}: FAILED to extract frames", task_id=stitch_task_id_str)
                             failed_segments.append(idx)
 
                     # Log this attempt
@@ -434,14 +432,14 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
 
                     # Check if all extractions succeeded
                     if all(f_list is not None and len(f_list) > 0 for f_list in all_segment_frames_lists):
-                        print(f"[CRITICAL DEBUG] All frame extractions successful on attempt {attempt + 1}")
+                        travel_logger.debug(f"All frame extractions successful on attempt {attempt + 1}", task_id=stitch_task_id_str)
                         retry_log.append(attempt_info)
                         break
 
                     # If not the last attempt, try to re-download corrupted videos before retry
                     if attempt < max_extraction_attempts - 1 and failed_segments:
                         wait_time = 3 + (attempt * 2)  # Progressive backoff: 3s, 5s, 7s
-                        print(f"[CRITICAL DEBUG] Frame extraction failed for segments {failed_segments}. Attempting re-download and retry in {wait_time} seconds...")
+                        travel_logger.debug(f"Frame extraction failed for segments {failed_segments}. Attempting re-download and retry in {wait_time} seconds...", task_id=stitch_task_id_str)
 
                         # Try to re-download failed segments (only for remote URLs)
                         redownload_attempted = False
@@ -454,21 +452,21 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                                 if video_path_str_from_db.startswith("http"):
                                     try:
                                         failed_video_path = Path(segment_video_paths_for_stitch[failed_idx])
-                                        print(f"[CRITICAL DEBUG] Re-downloading corrupted segment {failed_idx} from {video_path_str_from_db}")
+                                        travel_logger.debug(f"Re-downloading corrupted segment {failed_idx} from {video_path_str_from_db}", task_id=stitch_task_id_str)
 
                                         redownload_start = time.time()
 
                                         # Delete corrupted file
                                         if failed_video_path.exists():
                                             failed_video_path.unlink()
-                                            print(f"[CRITICAL DEBUG] Deleted corrupted file: {failed_video_path}")
+                                            travel_logger.debug(f"Deleted corrupted file: {failed_video_path}", task_id=stitch_task_id_str)
 
                                         # Re-download
                                         download_file(video_path_str_from_db, stitch_processing_dir, failed_video_path.name)
 
                                         # Wait for stability
                                         if wait_for_file_stable(failed_video_path, checks=5, interval=1.0, dprint=dprint):
-                                            print(f"[CRITICAL DEBUG] Re-downloaded segment {failed_idx} successfully")
+                                            travel_logger.debug(f"Re-downloaded segment {failed_idx} successfully", task_id=stitch_task_id_str)
                                             redownload_duration = time.time() - redownload_start
                                             attempt_info["redownloads"].append({
                                                 "segment_idx": failed_idx,
@@ -478,7 +476,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                                             })
                                             redownload_attempted = True
                                         else:
-                                            print(f"[CRITICAL DEBUG] Re-downloaded segment {failed_idx} not stable")
+                                            travel_logger.debug(f"Re-downloaded segment {failed_idx} not stable", task_id=stitch_task_id_str)
                                             redownload_duration = time.time() - redownload_start
                                             attempt_info["redownloads"].append({
                                                 "segment_idx": failed_idx,
@@ -489,7 +487,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                                             })
 
                                     except (OSError, ValueError, RuntimeError) as e_redownload:
-                                        print(f"[CRITICAL DEBUG] Re-download failed for segment {failed_idx}: {e_redownload}")
+                                        travel_logger.error(f"Re-download failed for segment {failed_idx}: {e_redownload}", task_id=stitch_task_id_str)
                                         redownload_duration = time.time() - redownload_start
                                         attempt_info["redownloads"].append({
                                             "segment_idx": failed_idx,
@@ -499,7 +497,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                                             "error": str(e_redownload)
                                         })
                                 else:
-                                    print(f"[CRITICAL DEBUG] Segment {failed_idx} is not a remote URL, cannot re-download: {video_path_str_from_db}")
+                                    travel_logger.debug(f"Segment {failed_idx} is not a remote URL, cannot re-download: {video_path_str_from_db}", task_id=stitch_task_id_str)
                                     attempt_info["redownloads"].append({
                                         "segment_idx": failed_idx,
                                         "source_url": video_path_str_from_db,
@@ -509,9 +507,9 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                                     })
 
                         if redownload_attempted:
-                            print(f"[CRITICAL DEBUG] Re-download completed. Waiting {wait_time} seconds before next extraction attempt...")
+                            travel_logger.debug(f"Re-download completed. Waiting {wait_time} seconds before next extraction attempt...", task_id=stitch_task_id_str)
                         else:
-                            print(f"[CRITICAL DEBUG] No re-downloads attempted. Waiting {wait_time} seconds before next extraction attempt...")
+                            travel_logger.debug(f"No re-downloads attempted. Waiting {wait_time} seconds before next extraction attempt...", task_id=stitch_task_id_str)
 
                         time.sleep(wait_time)
 
@@ -570,7 +568,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                             error_details.append(attempt_summary)
 
                     # Before failing, try FFmpeg-based cross-fade as fallback
-                    print(f"[CRITICAL DEBUG] Frame extraction failed completely. Attempting FFmpeg cross-fade fallback...")
+                    travel_logger.debug(f"Frame extraction failed completely. Attempting FFmpeg cross-fade fallback...", task_id=stitch_task_id_str)
                     try:
                         ffmpeg_result = attempt_ffmpeg_crossfade_fallback(
                             segment_video_paths_for_stitch,
@@ -580,7 +578,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                             dprint
                         )
                         if ffmpeg_result:
-                            print(f"[CRITICAL DEBUG] FFmpeg cross-fade fallback succeeded!")
+                            travel_logger.essential(f"FFmpeg cross-fade fallback succeeded!", task_id=stitch_task_id_str)
                             current_stitched_video_path = path_for_raw_stitched_video
                         else:
                             detailed_error = "Stitch: Both frame extraction and FFmpeg cross-fade fallback failed. " + " | ".join(error_details)
@@ -597,8 +595,8 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                     frames_curr_segment = all_segment_frames_lists[i+1]
                     current_overlap_val = actual_overlaps_for_stitching[i]
 
-                    print(f"[CRITICAL DEBUG] Stitch point {i}: segments {i}->{i+1}, overlap={current_overlap_val}")
-                    print(f"[CRITICAL DEBUG] Prev segment: {len(frames_prev_segment)} frames, Curr segment: {len(frames_curr_segment)} frames")
+                    travel_logger.debug(f"Stitch point {i}: segments {i}->{i+1}, overlap={current_overlap_val}", task_id=stitch_task_id_str)
+                    travel_logger.debug(f"Prev segment: {len(frames_prev_segment)} frames, Curr segment: {len(frames_curr_segment)} frames", task_id=stitch_task_id_str)
 
                     # --- NEW OVERLAP DETAIL LOG ---
                     if current_overlap_val > 0:
@@ -606,8 +604,8 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                         end_prev = len(frames_prev_segment) - 1
                         start_curr = 0
                         end_curr = current_overlap_val - 1
-                        print(
-                            f"[OVERLAP_DETAIL] Join {i}: blending prev[{start_prev}:{end_prev}] with curr[{start_curr}:{end_curr}] (total {current_overlap_val} frames)"
+                        travel_logger.debug(
+                            f"Join {i}: blending prev[{start_prev}:{end_prev}] with curr[{start_curr}:{end_curr}] (total {current_overlap_val} frames)", task_id=stitch_task_id_str
                         )
                     # --- END OVERLAP DETAIL LOG ---
 
@@ -617,11 +615,11 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                             # Add frames before the overlap region
                             frames_before_overlap = frames_prev_segment[:-current_overlap_val]
                             final_stitched_frames.extend(frames_before_overlap)
-                            print(f"[CRITICAL DEBUG] Added {len(frames_before_overlap)} frames from segment 0 (before overlap)")
+                            travel_logger.debug(f"Added {len(frames_before_overlap)} frames from segment 0 (before overlap)", task_id=stitch_task_id_str)
                         else:
                             # No overlap, add all frames from segment 0
                             final_stitched_frames.extend(frames_prev_segment)
-                            print(f"[CRITICAL DEBUG] Added all {len(frames_prev_segment)} frames from segment 0 (no overlap)")
+                            travel_logger.debug(f"Added all {len(frames_prev_segment)} frames from segment 0 (no overlap)", task_id=stitch_task_id_str)
                     else:
                         pass
 
@@ -639,19 +637,19 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                                 frames_to_remove = min(crossfade_count, len(final_stitched_frames))
                                 if frames_to_remove > 0:
                                     del final_stitched_frames[-frames_to_remove:]
-                                    print(f"[CRITICAL DEBUG] [REGENERATE_ANCHORS] Removed {frames_to_remove} frames before cross-fade (keeping previous anchor)")
+                                    travel_logger.debug(f"[REGENERATE_ANCHORS] Removed {frames_to_remove} frames before cross-fade (keeping previous anchor)", task_id=stitch_task_id_str)
 
                             # Blend the non-anchor overlapping frames
                             frames_prev_for_fade = frames_prev_segment[-crossfade_count:] if crossfade_count > 0 else []
                             frames_curr_for_fade = frames_curr_segment[:crossfade_count]
                             faded_frames = cross_fade_overlap_frames(frames_prev_for_fade, frames_curr_for_fade, crossfade_count, "linear_sharp", crossfade_sharp_amt)
                             final_stitched_frames.extend(faded_frames)
-                            print(f"[CRITICAL DEBUG] [REGENERATE_ANCHORS] Added {len(faded_frames)} cross-faded frames (skipping anchor)")
+                            travel_logger.debug(f"[REGENERATE_ANCHORS] Added {len(faded_frames)} cross-faded frames (skipping anchor)", task_id=stitch_task_id_str)
 
                             # Add the regenerated anchor frame directly (no blend)
                             anchor_frame = frames_curr_segment[crossfade_count]
                             final_stitched_frames.append(anchor_frame)
-                            print(f"[CRITICAL DEBUG] [REGENERATE_ANCHORS] Added regenerated anchor frame directly (no blend)")
+                            travel_logger.debug(f"[REGENERATE_ANCHORS] Added regenerated anchor frame directly (no blend)", task_id=stitch_task_id_str)
 
                             # Adjust start index for remaining frames
                             start_index_for_curr_tail = current_overlap_val
@@ -663,11 +661,11 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                                 frames_to_remove = min(current_overlap_val, len(final_stitched_frames))
                                 if frames_to_remove > 0:
                                     del final_stitched_frames[-frames_to_remove:]
-                                    print(f"[CRITICAL DEBUG] Removed {frames_to_remove} duplicate overlap frames before cross-fade (stitch point {i})")
+                                    travel_logger.debug(f"Removed {frames_to_remove} duplicate overlap frames before cross-fade (stitch point {i})", task_id=stitch_task_id_str)
                             # Blend the overlapping frames
                             faded_frames = cross_fade_overlap_frames(frames_prev_segment, frames_curr_segment, current_overlap_val, "linear_sharp", crossfade_sharp_amt)
                             final_stitched_frames.extend(faded_frames)
-                            print(f"[CRITICAL DEBUG] Added {len(faded_frames)} cross-faded frames")
+                            travel_logger.debug(f"Added {len(faded_frames)} cross-faded frames", task_id=stitch_task_id_str)
 
                             # Normal start index for remaining frames
                             start_index_for_curr_tail = current_overlap_val
@@ -678,9 +676,9 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                     if len(frames_curr_segment) > start_index_for_curr_tail:
                         frames_to_add = frames_curr_segment[start_index_for_curr_tail:]
                         final_stitched_frames.extend(frames_to_add)
-                        print(f"[CRITICAL DEBUG] Added {len(frames_to_add)} frames from segment {i+1} (after overlap)")
+                        travel_logger.debug(f"Added {len(frames_to_add)} frames from segment {i+1} (after overlap)", task_id=stitch_task_id_str)
                     
-                    print(f"[CRITICAL DEBUG] Running total after stitch point {i}: {len(final_stitched_frames)} frames")
+                    travel_logger.debug(f"Running total after stitch point {i}: {len(final_stitched_frames)} frames", task_id=stitch_task_id_str)
                 
                 if not final_stitched_frames: raise ValueError("Stitch: No frames produced after cross-fade logic.")
                 
@@ -691,12 +689,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                 total_overlaps = sum(actual_overlaps_for_stitching)
                 expected_output_frames = total_input_frames - total_overlaps
                 actual_output_frames = len(final_stitched_frames)
-                print(f"[CRITICAL DEBUG] FINAL CROSS-FADE SUMMARY:")
-                print(f"[CRITICAL DEBUG] Total input frames: {total_input_frames}")
-                print(f"[CRITICAL DEBUG] Total overlaps: {total_overlaps}")
-                print(f"[CRITICAL DEBUG] Expected output: {expected_output_frames}")
-                print(f"[CRITICAL DEBUG] Actual output: {actual_output_frames}")
-                print(f"[CRITICAL DEBUG] Match: {expected_output_frames == actual_output_frames}")
+                travel_logger.debug(f"FINAL CROSS-FADE SUMMARY: Total input frames: {total_input_frames}, Total overlaps: {total_overlaps}, Expected output: {expected_output_frames}, Actual output: {actual_output_frames}, Match: {expected_output_frames == actual_output_frames}", task_id=stitch_task_id_str)
                 
                 created_video_path_obj = create_video_from_frames_list(final_stitched_frames, path_for_raw_stitched_video, final_fps, parsed_res_wh)
                 if created_video_path_obj and created_video_path_obj.exists():
@@ -709,7 +702,7 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                 try:
                     from ...utils import stitch_videos_ffmpeg as stitch_videos_ffmpeg
                 except ImportError:
-                    print(f"[CRITICAL ERROR Task ID: {stitch_task_id_str}] Failed to import 'stitch_videos_ffmpeg'. Cannot proceed with stitching.")
+                    travel_logger.error(f"Failed to import 'stitch_videos_ffmpeg'. Cannot proceed with stitching.", task_id=stitch_task_id_str)
                     raise
 
                 if stitch_videos_ffmpeg(segment_video_paths_for_stitch, str(path_for_raw_stitched_video)):
@@ -723,15 +716,15 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
         video_path_after_optional_upscale = current_stitched_video_path
 
         if isinstance(upscale_factor, (float, int)) and upscale_factor > 1.0 and upscale_model_name:
-            print(f"[STITCH UPSCALE] Starting upscale process: {upscale_factor}x using model {upscale_model_name}")
+            travel_logger.essential(f"Starting upscale process: {upscale_factor}x using model {upscale_model_name}", task_id=stitch_task_id_str)
             dprint(f"Stitch: Upscaling (x{upscale_factor}) video {current_stitched_video_path.name} using model {upscale_model_name}")
             
             original_frames_count, original_fps = get_video_frame_count_and_fps(str(current_stitched_video_path))
             if original_frames_count is None or original_frames_count == 0:
                 raise ValueError(f"Stitch: Cannot get frame count or 0 frames for video {current_stitched_video_path} before upscaling.")
             
-            print(f"[STITCH UPSCALE] Input video: {original_frames_count} frames @ {original_fps} FPS")
-            print(f"[STITCH UPSCALE] Target resolution: {int(parsed_res_wh[0] * upscale_factor)}x{int(parsed_res_wh[1] * upscale_factor)}")
+            travel_logger.debug(f"Upscale input video: {original_frames_count} frames @ {original_fps} FPS", task_id=stitch_task_id_str)
+            travel_logger.debug(f"Upscale target resolution: {int(parsed_res_wh[0] * upscale_factor)}x{int(parsed_res_wh[1] * upscale_factor)}", task_id=stitch_task_id_str)
             dprint(f"[DEBUG] Pre-upscale analysis: {original_frames_count} frames, {original_fps} FPS")
 
             target_width_upscaled = int(parsed_res_wh[0] * upscale_factor)
@@ -756,20 +749,19 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                 task_payload=upscale_payload, 
                 task_type_str=upscaler_engine_to_use
             )
-            print(f"[STITCH UPSCALE] Enqueued upscale sub-task {upscale_sub_task_id} ({upscaler_engine_to_use}). Waiting...")
-            print(f"Stitch Task {stitch_task_id_str}: Enqueued upscale sub-task {upscale_sub_task_id} ({upscaler_engine_to_use}). Waiting...")
+            travel_logger.essential(f"Enqueued upscale sub-task {upscale_sub_task_id} ({upscaler_engine_to_use}). Waiting...", task_id=stitch_task_id_str)
             
             poll_interval_ups = full_orchestrator_payload.get("poll_interval", 15)
             poll_timeout_ups = full_orchestrator_payload.get("poll_timeout_upscale", full_orchestrator_payload.get("poll_timeout", 30 * 60) * 2)
             
-            print(f"[STITCH UPSCALE] Polling for completion (timeout: {poll_timeout_ups}s, interval: {poll_interval_ups}s)")
+            travel_logger.debug(f"Upscale polling for completion (timeout: {poll_timeout_ups}s, interval: {poll_interval_ups}s)", task_id=stitch_task_id_str)
             
             upscaled_video_db_location = db_ops.poll_task_status(
                 task_id=upscale_sub_task_id, 
                 poll_interval_seconds=poll_interval_ups, 
                 timeout_seconds=poll_timeout_ups
             )
-            print(f"[STITCH UPSCALE] Poll result: {upscaled_video_db_location}")
+            travel_logger.debug(f"Upscale poll result: {upscaled_video_db_location}", task_id=stitch_task_id_str)
             dprint(f"Stitch Task {stitch_task_id_str}: Upscale sub-task {upscale_sub_task_id} poll result: {upscaled_video_db_location}")
 
             if upscaled_video_db_location:
@@ -777,20 +769,20 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                 upscaled_video_abs_path: Path = Path(upscaled_video_db_location)
 
                 if upscaled_video_abs_path.exists():
-                    print(f"[STITCH UPSCALE] Upscale completed successfully: {upscaled_video_abs_path}")
+                    travel_logger.essential(f"Upscale completed successfully: {upscaled_video_abs_path}", task_id=stitch_task_id_str)
                     dprint(f"Stitch: Upscale sub-task {upscale_sub_task_id} completed. Output: {upscaled_video_abs_path}")
                     
                     # Analyze upscaled result
                     try:
                         upscaled_frame_count, upscaled_fps = get_video_frame_count_and_fps(str(upscaled_video_abs_path))
-                        print(f"[STITCH UPSCALE] Upscaled result: {upscaled_frame_count} frames @ {upscaled_fps} FPS")
+                        travel_logger.debug(f"Upscaled result: {upscaled_frame_count} frames @ {upscaled_fps} FPS", task_id=stitch_task_id_str)
                         dprint(f"[DEBUG] Post-upscale analysis: {upscaled_frame_count} frames, {upscaled_fps} FPS")
                         
                         # Compare frame counts
                         if upscaled_frame_count != original_frames_count:
-                            print(f"[STITCH UPSCALE] Frame count changed during upscale: {original_frames_count} → {upscaled_frame_count}")
+                            travel_logger.warning(f"Frame count changed during upscale: {original_frames_count} -> {upscaled_frame_count}", task_id=stitch_task_id_str)
                     except (OSError, ValueError, RuntimeError) as e_post_upscale:
-                        print(f"[WARNING] Could not analyze upscaled video: {e_post_upscale}")
+                        travel_logger.warning(f"Could not analyze upscaled video: {e_post_upscale}", task_id=stitch_task_id_str)
                     
                     video_path_after_optional_upscale = upscaled_video_abs_path
                     
@@ -803,17 +795,15 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                         except OSError as e_del_non_upscaled:
                             dprint(f"Stitch: Warning - could not remove non-upscaled video {current_stitched_video_path}: {e_del_non_upscaled}")
                 else: 
-                    print(f"[STITCH UPSCALE] ERROR: Upscale output missing at {upscaled_video_abs_path}. Using non-upscaled video.")
-                    print(f"[WARNING] Stitch Task {stitch_task_id_str}: Upscale sub-task {upscale_sub_task_id} output missing ({upscaled_video_abs_path}). Using non-upscaled video.")
+                    travel_logger.error(f"Upscale output missing at {upscaled_video_abs_path}. Using non-upscaled video.", task_id=stitch_task_id_str)
             else: 
-                print(f"[STITCH UPSCALE] ERROR: Upscale sub-task failed or timed out. Using non-upscaled video.")
-                print(f"[WARNING] Stitch Task {stitch_task_id_str}: Upscale sub-task {upscale_sub_task_id} failed or timed out. Using non-upscaled video.")
+                travel_logger.error(f"Upscale sub-task {upscale_sub_task_id} failed or timed out. Using non-upscaled video.", task_id=stitch_task_id_str)
 
         elif upscale_factor > 1.0 and not upscale_model_name:
-            print(f"[STITCH UPSCALE] Upscale factor {upscale_factor} > 1.0 but no upscale_model_name provided. Skipping upscale.")
+            travel_logger.warning(f"Upscale factor {upscale_factor} > 1.0 but no upscale_model_name provided. Skipping upscale.", task_id=stitch_task_id_str)
             dprint(f"Stitch: Upscale factor {upscale_factor} > 1.0 but no upscale_model_name provided. Skipping upscale.")
         else:
-            print(f"[STITCH UPSCALE] No upscaling requested (factor: {upscale_factor})")
+            travel_logger.debug(f"No upscaling requested (factor: {upscale_factor})", task_id=stitch_task_id_str)
             dprint(f"Stitch: No upscaling (factor: {upscale_factor})")
 
         # Use consistent UUID-based naming for final video
@@ -854,10 +844,8 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
         try:
             final_frame_count, final_fps = get_video_frame_count_and_fps(str(final_video_path))
             final_duration = final_frame_count / final_fps if final_fps > 0 else 0
-            print(f"[STITCH FINAL] Final video: {final_frame_count} frames @ {final_fps} FPS = {final_duration:.2f}s")
-            print(f"[STITCH_FINAL_ANALYSIS] Complete stitching analysis:")
-            print(f"[STITCH_FINAL_ANALYSIS]   Input segments: {len(segment_video_paths_for_stitch)}")
-            print(f"[STITCH_FINAL_ANALYSIS]   Overlap settings: {expanded_frame_overlaps}")
+            travel_logger.essential(f"Final video: {final_frame_count} frames @ {final_fps} FPS = {final_duration:.2f}s", task_id=stitch_task_id_str)
+            travel_logger.debug(f"Complete stitching analysis: Input segments: {len(segment_video_paths_for_stitch)}, Overlap settings: {expanded_frame_overlaps}", task_id=stitch_task_id_str)
             # Calculate expected final length for analysis
             try:
                 # Ground-truth expected length: compute from the actual decoded segment frame counts.
@@ -876,23 +864,20 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                     total_input_frames = sum(actual_segment_counts)
                     total_overlaps = sum(expanded_frame_overlaps) if expanded_frame_overlaps else 0
                     expected_final_length = total_input_frames - total_overlaps
-                    print(f"[STITCH_FINAL_ANALYSIS]   Expected final frames (from actual segments): {expected_final_length}")
-                    print(f"[STITCH_FINAL_ANALYSIS]   Actual final frames: {final_frame_count}")
+                    travel_logger.debug(f"Expected final frames (from actual segments): {expected_final_length}, Actual final frames: {final_frame_count}", task_id=stitch_task_id_str)
                     if final_frame_count != expected_final_length:
-                        print(f"[STITCH_FINAL_ANALYSIS]   ⚠️  FINAL LENGTH MISMATCH! Expected {expected_final_length}, got {final_frame_count}")
+                        travel_logger.warning(f"FINAL LENGTH MISMATCH! Expected {expected_final_length}, got {final_frame_count}", task_id=stitch_task_id_str)
                 else:
-                    print(f"[STITCH_FINAL_ANALYSIS]   Expected final frames: Not available (could not count input segments)")
-                    print(f"[STITCH_FINAL_ANALYSIS]   Actual final frames: {final_frame_count}")
+                    travel_logger.debug(f"Expected final frames: Not available (could not count input segments), Actual final frames: {final_frame_count}", task_id=stitch_task_id_str)
             except (OSError, ValueError, RuntimeError, TypeError) as e:
-                print(f"[STITCH_FINAL_ANALYSIS]   Expected final frames: Not calculated ({e})")
-                print(f"[STITCH_FINAL_ANALYSIS]   Actual final frames: {final_frame_count}")
+                travel_logger.debug(f"Expected final frames: Not calculated ({e}), Actual final frames: {final_frame_count}", task_id=stitch_task_id_str)
             
             # Detailed analysis of the final video
             debug_video_analysis(final_video_path, "FINAL_STITCHED_VIDEO", stitch_task_id_str)
             
             dprint(f"[DEBUG] Final video analysis: {final_frame_count} frames, {final_fps} FPS, {final_duration:.2f}s duration")
         except (OSError, ValueError, RuntimeError) as e_final_analysis:
-            print(f"[WARNING] Could not analyze final video: {e_final_analysis}")
+            travel_logger.warning(f"Could not analyze final video: {e_final_analysis}", task_id=stitch_task_id_str)
         
         # Note: Individual segments already have banner overlays applied when show_input_images is enabled,
         # so the stitched video will automatically include them. No additional overlay needed here.
@@ -930,9 +915,9 @@ def _handle_travel_stitch_task(task_params_from_db: dict, main_output_dir_base: 
                         dprint(f"Stitch: Failed to clean up {video_path}: {e_cleanup}")
 
             if files_cleaned > 0:
-                print(f"[STITCH_CLEANUP] Removed {files_cleaned} downloaded files ({total_size_cleaned:,} bytes)")
+                travel_logger.debug(f"Removed {files_cleaned} downloaded files ({total_size_cleaned:,} bytes)", task_id=stitch_task_id_str)
         else:
-            print(f"[STITCH_CLEANUP] Skipping cleanup (debug mode or cleanup disabled)")
+            travel_logger.debug(f"Skipping cleanup (debug mode or cleanup disabled)", task_id=stitch_task_id_str)
 
         # Note: Orchestrator will be marked complete by worker.py after stitch upload completes
         # This ensures the orchestrator gets the final storage URL, not a local path

@@ -9,6 +9,8 @@ import traceback
 import httpx
 from postgrest.exceptions import APIError
 
+from source.core.log import headless_logger
+
 from . import config as _cfg
 from .config import (
     STATUS_COMPLETE,
@@ -171,7 +173,7 @@ def get_orchestrator_child_tasks(orchestrator_task_id: str) -> dict:
 
     # Fallback to direct query if edge function not available or failed
     if not _cfg.SUPABASE_CLIENT:
-        print(f"[ERROR] No edge function or Supabase client available for get_orchestrator_child_tasks")
+        headless_logger.error(f"No edge function or Supabase client available for get_orchestrator_child_tasks", task_id=orchestrator_task_id)
         return empty_result
 
     try:
@@ -286,10 +288,10 @@ def cancel_orchestrator_children(orchestrator_task_id: str, reason: str = "Orche
             update_task_status(child_id, "Cancelled", output_location=reason)
             cancelled_count += 1
         except (httpx.HTTPError, OSError, ValueError) as e:
-            print(f"[ERROR][CANCEL_CHILDREN] Failed to cancel child {child_id}: {e}")
+            headless_logger.error(f"[CANCEL_CHILDREN] Failed to cancel child {child_id}: {e}", task_id=child_id)
 
     if cancelled_count > 0:
-        print(f"[CANCEL_CHILDREN] Cancelled {cancelled_count}/{len(all_children)} child tasks for orchestrator {orchestrator_task_id}")
+        headless_logger.essential(f"[CANCEL_CHILDREN] Cancelled {cancelled_count}/{len(all_children)} child tasks for orchestrator {orchestrator_task_id}", task_id=orchestrator_task_id)
     else:
         dprint(f"[CANCEL_CHILDREN] All {len(all_children)} children already in terminal state for orchestrator {orchestrator_task_id}")
 
@@ -355,7 +357,7 @@ def cleanup_duplicate_child_tasks(orchestrator_task_id: str, expected_segments: 
 def _delete_task_by_id(task_id: str) -> bool:
     """Helper to delete a task by ID from Supabase. Returns True if successful."""
     if not _cfg.SUPABASE_CLIENT:
-        print(f"[ERROR] Supabase client not initialized. Cannot delete task {task_id}")
+        headless_logger.error(f"Supabase client not initialized. Cannot delete task {task_id}", task_id=task_id)
         return False
 
     try:
@@ -377,7 +379,7 @@ def get_predecessor_output_via_edge_function(task_id: str) -> tuple[str | None, 
         (predecessor_id, output_location) or (None, None) if no dependency or error
     """
     if not _cfg.SUPABASE_URL or not _cfg.SUPABASE_ACCESS_TOKEN:
-        print("[ERROR] Supabase configuration incomplete. Falling back to direct queries.")
+        headless_logger.error("Supabase configuration incomplete. Falling back to direct queries.", task_id=task_id)
         predecessor_id = get_task_dependency(task_id)
         if predecessor_id:
             output_location = get_task_output_location_from_db(predecessor_id)
@@ -433,7 +435,7 @@ def get_predecessor_output_via_edge_function(task_id: str) -> tuple[str | None, 
 def get_completed_segment_outputs_for_stitch(run_id: str, project_id: str | None = None) -> list:
     """Gets completed travel_segment outputs for a given run_id for stitching from Supabase."""
     if not _cfg.SUPABASE_URL or not _cfg.SUPABASE_ACCESS_TOKEN:
-        print("[ERROR] Supabase configuration incomplete. Cannot get completed segments.")
+        headless_logger.error("Supabase configuration incomplete. Cannot get completed segments.")
         return []
 
     edge_url = f"{_cfg.SUPABASE_URL.rstrip('/')}/functions/v1/get-completed-segments"
@@ -459,7 +461,7 @@ def get_completed_segment_outputs_for_stitch(run_id: str, project_id: str | None
 
     # Fallback to direct query
     if not _cfg.SUPABASE_CLIENT:
-        print("[ERROR] Supabase client not initialized. Cannot fall back to direct query.")
+        headless_logger.error("Supabase client not initialized. Cannot fall back to direct query.")
         return []
 
     try:

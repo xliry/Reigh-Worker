@@ -32,7 +32,7 @@ def handle_rife_interpolate_task(task_params_dict: dict, main_output_dir_base: P
     missing_params = [key for key, value in required_params.items() if value is None]
     if missing_params:
         error_msg = f"Missing required parameters for rife_interpolate_images: {', '.join(missing_params)}"
-        print(f"[ERROR Task ID: {task_id}] {error_msg}")
+        task_logger.error(error_msg, task_id=task_id)
         return False, error_msg
 
     input_image1_path = Path(input_image_path1_str)
@@ -56,10 +56,10 @@ def handle_rife_interpolate_task(task_params_dict: dict, main_output_dir_base: P
 
     dprint(f"[Task ID: {task_id}] Checking input image paths.")
     if not input_image1_path.is_file():
-        print(f"[ERROR Task ID: {task_id}] Input image 1 not found: {input_image1_path}")
+        task_logger.error(f"Input image 1 not found: {input_image1_path}", task_id=task_id)
         return False, f"Input image 1 not found: {input_image1_path}"
     if not input_image2_path.is_file():
-        print(f"[ERROR Task ID: {task_id}] Input image 2 not found: {input_image2_path}")
+        task_logger.error(f"Input image 2 not found: {input_image2_path}", task_id=task_id)
         return False, f"Input image 2 not found: {input_image2_path}"
     dprint(f"[Task ID: {task_id}] Input images found.")
 
@@ -69,7 +69,7 @@ def handle_rife_interpolate_task(task_params_dict: dict, main_output_dir_base: P
         pil_image_start = Image.open(input_image1_path).convert("RGB")
         pil_image_end = Image.open(input_image2_path).convert("RGB")
 
-        print(f"[Task ID: {task_id}] Starting RIFE interpolation via source.media.video.")
+        task_logger.essential("Starting RIFE interpolation via source.media.video.", task_id=task_id)
         dprint(f"  Input 1: {input_image1_path}")
         dprint(f"  Input 2: {input_image2_path}")
 
@@ -89,17 +89,17 @@ def handle_rife_interpolate_task(task_params_dict: dict, main_output_dir_base: P
                 output_location_to_db = upload_and_get_final_output_location(
                     final_save_path_for_video, task_id, initial_db_location_for_rife, dprint=dprint
                 )
-                print(f"[Task ID: {task_id}] RIFE video saved to: {final_save_path_for_video.resolve()} (DB: {output_location_to_db})")
+                task_logger.essential(f"RIFE video saved to: {final_save_path_for_video.resolve()} (DB: {output_location_to_db})", task_id=task_id)
             else:
-                print(f"[ERROR Task ID: {task_id}] RIFE utility reported success, but output file is missing or empty: {final_save_path_for_video}")
+                task_logger.error(f"RIFE utility reported success, but output file is missing or empty: {final_save_path_for_video}", task_id=task_id)
                 generation_success = False
         else:
-            print(f"[ERROR Task ID: {task_id}] RIFE interpolation failed.")
+            task_logger.error("RIFE interpolation failed.", task_id=task_id)
             generation_success = False
 
     except (OSError, ValueError, RuntimeError) as e:
-        print(f"[ERROR Task ID: {task_id}] Overall _handle_rife_interpolate_task failed: {e}")
-        traceback.print_exc()
+        task_logger.error(f"Overall _handle_rife_interpolate_task failed: {e}", task_id=task_id)
+        task_logger.debug(f"RIFE traceback: {traceback.format_exc()}", task_id=task_id)
         generation_success = False
     finally:
         pass

@@ -732,23 +732,23 @@ class WanOrchestrator:
         
         def send_cmd(cmd: str, data=None):
             if cmd == "status":
-                print(f"📊 Status: {data}")
+                generation_logger.debug(f"Status: {data}")
             elif cmd == "progress":
                 if isinstance(data, list) and len(data) >= 2:
                     progress, status = data[0], data[1]
-                    print(f"⏳ Progress: {progress}% - {status}")
+                    generation_logger.debug(f"Progress: {progress}% - {status}")
                 else:
-                    print(f"⏳ Progress: {data}")
+                    generation_logger.debug(f"Progress: {data}")
             elif cmd == "output":
-                print("📤 Output generated")
+                generation_logger.essential("Output generated")
             elif cmd == "exit":
-                print("🏁 Generation completed")
+                generation_logger.essential("Generation completed")
             elif cmd == "error":
-                print(f"❌ Error: {data}")
+                generation_logger.error(f"Error: {data}")
             elif cmd == "info":
-                print(f"ℹ️  Info: {data}")
+                generation_logger.debug(f"Info: {data}")
             elif cmd == "preview":
-                print("🖼️  Preview updated")
+                generation_logger.debug("Preview updated")
 
         if is_passthrough_mode:
             # COMPLETE PASSTHROUGH MODE: Pass ALL parameters from JSON with required defaults

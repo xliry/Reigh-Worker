@@ -23,9 +23,10 @@ if TYPE_CHECKING:
 try:
     from worker import dprint
 except ImportError:
+    from source.core.log import headless_logger as _fallback_logger
     def dprint(msg):
         if os.environ.get('DEBUG'):
-            print(msg)
+            _fallback_logger.debug(msg)
 
 from source.core.constants import BYTES_PER_GB as BYTES_PER_GIB
 

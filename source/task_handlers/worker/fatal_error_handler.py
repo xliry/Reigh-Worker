@@ -16,6 +16,8 @@ import re
 import os
 import sys
 
+from source.core.log import headless_logger
+
 
 class FatalWorkerError(Exception):
     """
@@ -379,16 +381,12 @@ def handle_fatal_error_in_worker(
             f"The worker will shut down immediately."
         )
     else:
-        print(
-            f"\n{'='*80}\n"
-            f"🚨 FATAL WORKER ERROR - TERMINATING 🚨\n"
-            f"{'='*80}\n"
-            f"Category: {category}\n"
-            f"Worker: {worker_id or 'unknown'}\n"
-            f"Task: {task_id or 'none'}\n"
-            f"Error: {error_message}\n"
-            f"{'='*80}\n",
-            file=sys.stderr
+        headless_logger.critical(
+            f"FATAL WORKER ERROR - TERMINATING | "
+            f"Category: {category} | "
+            f"Worker: {worker_id or 'unknown'} | "
+            f"Task: {task_id or 'none'} | "
+            f"Error: {error_message}"
         )
     
     # Attempt to mark worker for termination via Supabase (if worker_id provided)

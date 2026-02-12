@@ -8,6 +8,8 @@ import traceback
 import httpx
 from postgrest.exceptions import APIError
 
+from source.core.log import headless_logger
+
 from . import config as _cfg
 from .config import (
     STATUS_IN_PROGRESS,
@@ -23,15 +25,15 @@ def init_db():
 def init_db_supabase():
     """Check if the Supabase tasks table exists and is accessible."""
     if not _cfg.SUPABASE_CLIENT:
-        print("[ERROR] Supabase client not initialized. Cannot check database table.")
+        headless_logger.error("Supabase client not initialized. Cannot check database table.")
         sys.exit(1)
     try:
         # Simply check if the tasks table exists by querying it
         result = _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME).select("count", count="exact").limit(1).execute()
-        print(f"Supabase: Table '{_cfg.PG_TABLE_NAME}' exists and accessible (count: {result.count})")
+        headless_logger.essential(f"Supabase: Table '{_cfg.PG_TABLE_NAME}' exists and accessible (count: {result.count})")
         return True
     except (APIError, RuntimeError, ValueError, OSError) as e:
-        print(f"[ERROR] Supabase table check failed: {e}")
+        headless_logger.error(f"Supabase table check failed: {e}")
         # Don't exit - the table might exist but have different permissions
         # Let the actual operations try and fail gracefully
         return False
@@ -116,7 +118,7 @@ def check_my_assigned_tasks(worker_id: str) -> dict | None:
             task_type = task.get('task_type', 'unknown')
             params = task.get('params', {})
 
-            print(f"[RECOVERY] \U0001f504 Found assigned task {task_id} (type={task_type}) - recovering")
+            headless_logger.essential(f"[RECOVERY] Found assigned task {task_id} (type={task_type}) - recovering", task_id=task_id)
             dprint(f"[RECOVERY_DEBUG] Task was assigned to us but we didn't process it - likely lost HTTP response")
 
             # Return in the same format as claim-next-task Edge Function
@@ -201,12 +203,12 @@ def get_oldest_queued_task():
 def get_oldest_queued_task_supabase(worker_id: str = None):
     """Fetches the oldest task via Supabase Edge Function. First checks task counts to avoid unnecessary claim attempts."""
     if not _cfg.SUPABASE_CLIENT:
-        print("[ERROR] Supabase client not initialized. Cannot get task.")
+        headless_logger.error("Supabase client not initialized. Cannot get task.")
         return None
 
     # Worker ID is required
     if not worker_id:
-        print("[ERROR] No worker_id provided to get_oldest_queued_task_supabase")
+        headless_logger.error("No worker_id provided to get_oldest_queued_task_supabase")
         return None
 
     dprint(f"DEBUG: Using worker_id: {worker_id}")
@@ -259,8 +261,8 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
 
         # Log warning if counts are inconsistent
         if eligible_queued > 0 and available_tasks == 0:
-            print(f"[WARN] \u26a0\ufe0f  Task count inconsistency detected: eligible_queued={eligible_queued} but queued_only={available_tasks}")
-            print(f"[WARN] This suggests tasks exist but aren't visible as 'Queued' status - possible replication lag or status corruption")
+            headless_logger.warning(f"Task count inconsistency detected: eligible_queued={eligible_queued} but queued_only={available_tasks}")
+            headless_logger.warning(f"This suggests tasks exist but aren't visible as 'Queued' status - possible replication lag or status corruption")
             # Proceed with claim attempt despite queued_only=0 since eligible_queued>0
             dprint(f"[CLAIM_DEBUG] Proceeding with claim attempt despite queued_only=0 because eligible_queued={eligible_queued}")
         elif available_tasks <= 0:
@@ -308,7 +310,7 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
                 params = task_data.get('params', {})
                 segment_index = params.get('segment_index') if isinstance(params, dict) else None
 
-                print(f"[CLAIM] \u2705 Claimed task {task_id} (type={task_type}, segment_index={segment_index})")
+                headless_logger.essential(f"[CLAIM] Claimed task {task_id} (type={task_type}, segment_index={segment_index})", task_id=task_id)
                 dprint(f"[CLAIM_DEBUG] Full task data: {task_data}")
                 return task_data  # Already in the expected format
             elif resp.status_code == 204:
@@ -325,14 +327,14 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
                 return None
         except (httpx.HTTPError, OSError, ValueError) as e_edge:
             # Log visibly - this is a critical failure that can cause orphaned tasks
-            print(f"[CLAIM] \u274c Edge Function call failed: {e_edge}")
+            headless_logger.error(f"[CLAIM] Edge Function call failed: {e_edge}")
             dprint(f"[CLAIM_DEBUG] Exception type: {type(e_edge).__name__}")
             dprint(f"[CLAIM_DEBUG] Full traceback: {traceback.format_exc()}")
             if deferred_orchestrator_recovery:
                 return deferred_orchestrator_recovery
             return None
     else:
-        print("[CLAIM] \u274c No edge function URL or access token available for task claiming")
+        headless_logger.error("[CLAIM] No edge function URL or access token available for task claiming")
         if deferred_orchestrator_recovery:
             return deferred_orchestrator_recovery
         return None

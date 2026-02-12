@@ -8,6 +8,8 @@ from pathlib import Path
 
 import httpx
 
+from source.core.log import headless_logger
+
 from .config import (
     EDGE_FAIL_PREFIX,
     RETRYABLE_STATUS_CODES,
@@ -97,7 +99,7 @@ def _call_edge_function_with_retry(
                 should_retry = any(pattern.lower() in resp_text.lower() for pattern in retry_on_404_patterns)
                 if should_retry:
                     wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                    print(f"[RETRY] \u26a0\ufe0f {function_name} got 404 with retryable pattern{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                    headless_logger.essential(f"[RETRY] {function_name} got 404 with retryable pattern{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
                     dprint(f"[RETRY] 404 response: {resp_text[:200]}")
                     time.sleep(wait_time)
                     continue
@@ -105,7 +107,7 @@ def _call_edge_function_with_retry(
             # Retryable error (5xx)
             if resp.status_code in RETRYABLE_STATUS_CODES and attempt < max_retries - 1:
                 wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                print(f"[RETRY] \u26a0\ufe0f {function_name} got {resp.status_code}{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                headless_logger.essential(f"[RETRY] {function_name} got {resp.status_code}{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
                 time.sleep(wait_time)
                 continue
 
@@ -114,30 +116,30 @@ def _call_edge_function_with_retry(
             error_msg = f"{EDGE_FAIL_PREFIX}:{function_name}:{error_type}] {resp.status_code} after {attempt + 1} attempts{ctx}: {resp.text[:200]}"
 
             if resp.status_code in RETRYABLE_STATUS_CODES:
-                print(f"[ERROR] \u274c {function_name} failed with {resp.status_code} after {max_retries} attempts{ctx}")
+                headless_logger.error(f"{function_name} failed with {resp.status_code} after {max_retries} attempts{ctx}")
 
             return resp, error_msg
 
         except httpx.TimeoutException as e:
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt
-                print(f"[RETRY] \u23f3 {function_name} timeout{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
+                headless_logger.essential(f"[RETRY] {function_name} timeout{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
                 time.sleep(wait_time)
                 continue
             else:
                 error_msg = f"{EDGE_FAIL_PREFIX}:{function_name}:TIMEOUT] Timed out after {max_retries} attempts{ctx}: {e}"
-                print(f"[ERROR] \u274c {error_msg}")
+                headless_logger.error(error_msg)
                 return None, error_msg
 
         except httpx.RequestError as e:
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt
-                print(f"[RETRY] \u26a0\ufe0f {function_name} network error{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                headless_logger.essential(f"[RETRY] {function_name} network error{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
                 time.sleep(wait_time)
                 continue
             else:
                 error_msg = f"{EDGE_FAIL_PREFIX}:{function_name}:NETWORK] Request failed after {max_retries} attempts{ctx}: {e}"
-                print(f"[ERROR] \u274c {error_msg}")
+                headless_logger.error(error_msg)
                 return None, error_msg
 
     # Should not reach here, but safety fallback

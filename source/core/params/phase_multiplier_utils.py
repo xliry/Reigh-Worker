@@ -10,6 +10,8 @@ Example: "1.0;0.5" means strength 1.0 in pass 1, 0.5 in pass 2
 
 from typing import List, Tuple, Optional
 
+from source.core.log import headless_logger
+
 
 # Lightning/accelerator LoRA patterns for auto-detection
 LIGHTNING_PATTERNS = [
@@ -323,7 +325,7 @@ def get_phase_loras(
                     filtered_mults.append(str(phase_mult))
         except ValueError as e:
             # Skip malformed multipliers with warning
-            print(f"⚠️ Skipping LoRA '{lora_name}' in phase {phase_index+1}: {e}")
+            headless_logger.warning(f"Skipping LoRA '{lora_name}' in phase {phase_index+1}: {e}")
             continue
 
     return (filtered_loras, filtered_mults)

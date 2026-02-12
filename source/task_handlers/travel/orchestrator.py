@@ -1774,13 +1774,13 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             orchestrator_current_status = db_ops.get_task_current_status(orchestrator_task_id_str)
             if orchestrator_current_status and orchestrator_current_status.lower() in ('cancelled', 'canceled'):
                 dprint(f"[CANCELLATION] Orchestrator {orchestrator_task_id_str} was cancelled - aborting segment creation at index {idx}")
-                print(f"[ORCHESTRATOR] Orchestrator cancelled, stopping segment creation at segment {idx}")
+                travel_logger.essential(f"Orchestrator cancelled, stopping segment creation at segment {idx}", task_id=orchestrator_task_id_str)
                 # Cancel any child tasks that were already created in earlier iterations
                 db_ops.cancel_orchestrator_children(orchestrator_task_id_str, reason="Orchestrator cancelled by user")
                 return False, f"Orchestrator cancelled before segment {idx} could be created ({segments_created} segments were already created and have been cancelled)"
 
             dprint(f"[DEBUG_DEPENDENCY_CHAIN] Creating new segment {idx}, depends_on (prev idx {idx-1}): {previous_segment_task_id}")
-            print(f"[ORCHESTRATOR] Creating segment {idx} task...")
+            travel_logger.essential(f"Creating segment {idx} task...", task_id=orchestrator_task_id_str)
             actual_db_row_id = db_ops.add_task_to_db(
                 task_payload=segment_payload, 
                 task_type_str="travel_segment",
@@ -1788,16 +1788,16 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             )
             # Record the actual DB ID so subsequent segments depend on the real DB row ID
             actual_segment_db_id_by_index[idx] = actual_db_row_id
-            print(f"[ORCHESTRATOR] ✅ Segment {idx} created: task_id={actual_db_row_id}")
+            travel_logger.essential(f"Segment {idx} created: task_id={actual_db_row_id}", task_id=orchestrator_task_id_str)
             dprint(f"[DEBUG_DEPENDENCY_CHAIN] New segment {idx} created with actual DB ID: {actual_db_row_id}; next segment will depend on this")
             # Post-insert verification of dependency from DB
             try:
                 dep_saved = db_ops.get_task_dependency(actual_db_row_id)
                 dprint(f"[DEBUG_DEPENDENCY_CHAIN][VERIFY] Segment {idx} saved dependant_on={dep_saved} (expected {previous_segment_task_id})")
-                print(f"[ORCHESTRATOR] Segment {idx} dependency verified: dependant_on={dep_saved}")
+                travel_logger.debug(f"Segment {idx} dependency verified: dependant_on={dep_saved}", task_id=orchestrator_task_id_str)
             except (RuntimeError, ValueError, OSError) as e_ver:
                 dprint(f"[WARN][DEBUG_DEPENDENCY_CHAIN] Could not verify dependant_on for seg {idx} ({actual_db_row_id}): {e_ver}")
-                print(f"[WARN] ⚠️  Segment {idx} dependency verification failed (likely replication lag): {e_ver}")
+                travel_logger.warning(f"Segment {idx} dependency verification failed (likely replication lag): {e_ver}", task_id=orchestrator_task_id_str)
         
         # After loop, enqueue the stitch task (check for idempotency)
         # SKIP if independent segments or non-SVI I2V mode
@@ -1871,7 +1871,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             try:
                 dep_saved = db_ops.get_task_dependency(actual_stitch_db_row_id)
                 dprint(f"[DEBUG_DEPENDENCY_CHAIN][VERIFY] Stitch saved dependant_on={dep_saved} (expected {last_segment_task_id})")
-                print(f"[ORCHESTRATOR] ✅ Stitch task created: task_id={actual_stitch_db_row_id}")
+                travel_logger.essential(f"Stitch task created: task_id={actual_stitch_db_row_id}", task_id=orchestrator_task_id_str)
             except (RuntimeError, ValueError, OSError) as e_ver2:
                 dprint(f"[WARN][DEBUG_DEPENDENCY_CHAIN] Could not verify dependant_on for stitch ({actual_stitch_db_row_id}): {e_ver2}")
             stitch_created = 1

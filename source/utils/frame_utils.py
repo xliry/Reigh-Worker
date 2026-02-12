@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageEnhance
 
+from source.core.log import headless_logger
 from source.utils.prompt_utils import dprint
 from source.utils.download_utils import download_image_if_url
 
@@ -26,10 +27,10 @@ def _image_to_frame_simple(image_path: str | Path, target_size: tuple[int, int])
         img = img.resize(target_size, Image.Resampling.LANCZOS)
         return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
     except FileNotFoundError:
-        print(f"Error: Image file not found at {image_path}")
+        headless_logger.error(f"Image file not found at {image_path}")
         return None
     except (OSError, ValueError, RuntimeError) as e:
-        print(f"Error loading or processing image {image_path}: {e}")
+        headless_logger.error(f"Error loading or processing image {image_path}: {e}")
         return None
 
 
@@ -124,7 +125,7 @@ def extract_video_segment_ffmpeg(
     """Extracts a video segment using FFmpeg with stream copy if possible."""
     dprint(f"EXTRACT_VIDEO_SEGMENT_FFMPEG: Called with input='{input_video_path}', output='{output_video_path}', start_idx={start_frame_index}, num_frames={num_frames_to_keep}, input_fps={input_fps}")
     if num_frames_to_keep <= 0:
-        print(f"Warning: num_frames_to_keep is {num_frames_to_keep} for {output_video_path} (FFmpeg). Nothing to extract.")
+        headless_logger.warning(f"num_frames_to_keep is {num_frames_to_keep} for {output_video_path} (FFmpeg). Nothing to extract.")
         dprint("EXTRACT_VIDEO_SEGMENT_FFMPEG: num_frames_to_keep is 0 or less, returning.")
         Path(output_video_path).unlink(missing_ok=True)
         return
@@ -152,18 +153,18 @@ def extract_video_segment_ffmpeg(
         if process.stderr:
             dprint(f"FFmpeg stderr (for {output_video_path}):\n{process.stderr}")
         if not output_video_path.exists() or output_video_path.stat().st_size == 0:
-            print(f"Error: FFmpeg command for {output_video_path} apparently succeeded but output file is missing or empty.")
+            headless_logger.error(f"FFmpeg command for {output_video_path} apparently succeeded but output file is missing or empty.")
             dprint(f"FFmpeg command for {output_video_path} produced no output. stdout:\n{process.stdout}\nstderr:\n{process.stderr}")
 
     except subprocess.CalledProcessError as e:
-        print(f"Error during FFmpeg segment extraction for {output_video_path}:")
-        print("FFmpeg command:", ' '.join(e.cmd))
-        if e.stdout: print("FFmpeg stdout:\n", e.stdout)
-        if e.stderr: print("FFmpeg stderr:\n", e.stderr)
+        headless_logger.error(f"Error during FFmpeg segment extraction for {output_video_path}:")
+        headless_logger.error(f"FFmpeg command: {' '.join(e.cmd)}")
+        if e.stdout: headless_logger.error(f"FFmpeg stdout:\n{e.stdout}")
+        if e.stderr: headless_logger.error(f"FFmpeg stderr:\n{e.stderr}")
         dprint(f"FFmpeg extraction failed for {output_video_path}. Error: {e}")
         Path(output_video_path).unlink(missing_ok=True)
     except FileNotFoundError:
-        print("Error: ffmpeg command not found. Please ensure ffmpeg is installed and in your PATH.")
+        headless_logger.error("ffmpeg command not found. Please ensure ffmpeg is installed and in your PATH.")
         dprint("FFmpeg command not found during segment extraction.")
         raise
 
@@ -173,7 +174,7 @@ def stitch_videos_ffmpeg(video_paths_list: list[str | Path], output_path: str | 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not video_paths_list:
-        print("No videos to stitch.")
+        headless_logger.warning("No videos to stitch.")
         return
 
     valid_video_paths = []
@@ -182,10 +183,10 @@ def stitch_videos_ffmpeg(video_paths_list: list[str | Path], output_path: str | 
         if resolved_p.exists() and resolved_p.stat().st_size > 0:
             valid_video_paths.append(resolved_p)
         else:
-            print(f"Warning: Video segment {resolved_p} is missing or empty. Skipping from stitch list.")
+            headless_logger.warning(f"Video segment {resolved_p} is missing or empty. Skipping from stitch list.")
 
     if not valid_video_paths:
-        print("No valid video segments found to stitch after checks.")
+        headless_logger.warning("No valid video segments found to stitch after checks.")
         return
 
     with tempfile.TemporaryDirectory(prefix="ffmpeg_concat_") as tmpdir:
@@ -200,19 +201,19 @@ def stitch_videos_ffmpeg(video_paths_list: list[str | Path], output_path: str | 
             '-c', 'copy', str(output_path)
         ]
 
-        print(f"Running ffmpeg to stitch videos: {' '.join(cmd)}")
+        headless_logger.debug(f"Running ffmpeg to stitch videos: {' '.join(cmd)}")
         try:
             process = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8')
-            print(f"Successfully stitched videos into: {output_path}")
-            if process.stderr: print("FFmpeg log (stderr):\n", process.stderr)
+            headless_logger.essential(f"Successfully stitched videos into: {output_path}")
+            if process.stderr: headless_logger.debug(f"FFmpeg log (stderr):\n{process.stderr}")
         except subprocess.CalledProcessError as e:
-            print(f"Error during ffmpeg stitching for {output_path}:")
-            print("FFmpeg command:", ' '.join(e.cmd))
-            if e.stdout: print("FFmpeg stdout:\n", e.stdout)
-            if e.stderr: print("FFmpeg stderr:\n", e.stderr)
+            headless_logger.error(f"Error during ffmpeg stitching for {output_path}:")
+            headless_logger.error(f"FFmpeg command: {' '.join(e.cmd)}")
+            if e.stdout: headless_logger.error(f"FFmpeg stdout:\n{e.stdout}")
+            if e.stderr: headless_logger.error(f"FFmpeg stderr:\n{e.stderr}")
             raise
         except FileNotFoundError:
-            print("Error: ffmpeg command not found. Please ensure ffmpeg is installed and in your PATH.")
+            headless_logger.error("ffmpeg command not found. Please ensure ffmpeg is installed and in your PATH.")
             raise
 
 
@@ -220,12 +221,12 @@ def save_frame_from_video(video_path: Path, frame_index: int, output_image_path:
     """Extracts a specific frame from a video, resizes, and saves it as an image."""
     dprint(f"SAVE_FRAME_FROM_VIDEO: Input='{video_path}', Index={frame_index}, Output='{output_image_path}', Res={resolution}")
     if not video_path.exists() or video_path.stat().st_size == 0:
-        print(f"Error: Video file for frame extraction not found or empty: {video_path}")
+        headless_logger.error(f"Video file for frame extraction not found or empty: {video_path}")
         return False
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        print(f"Error: Could not open video file: {video_path}")
+        headless_logger.error(f"Could not open video file: {video_path}")
         return False
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -235,7 +236,7 @@ def save_frame_from_video(video_path: Path, frame_index: int, output_image_path:
         frame_index = total_frames + frame_index  # Convert to positive index
 
     if frame_index < 0 or frame_index >= total_frames:
-        print(f"Error: Frame index {frame_index} is out of bounds for video {video_path} (total frames: {total_frames}).")
+        headless_logger.error(f"Frame index {frame_index} is out of bounds for video {video_path} (total frames: {total_frames}).")
         cap.release()
         return False
 
@@ -244,7 +245,7 @@ def save_frame_from_video(video_path: Path, frame_index: int, output_image_path:
     cap.release()
 
     if not ret or frame is None:
-        print(f"Error: Could not read frame {frame_index} from {video_path}.")
+        headless_logger.error(f"Could not read frame {frame_index} from {video_path}.")
         return False
 
     try:
@@ -254,10 +255,10 @@ def save_frame_from_video(video_path: Path, frame_index: int, output_image_path:
 
         output_image_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(output_image_path), frame)
-        print(f"Successfully saved frame {frame_index} from {video_path} to {output_image_path}")
+        headless_logger.essential(f"Successfully saved frame {frame_index} from {video_path} to {output_image_path}")
         return True
     except (OSError, ValueError, RuntimeError) as e:
-        print(f"Error saving frame to {output_image_path}: {e}")
+        headless_logger.error(f"Error saving frame to {output_image_path}: {e}")
         traceback.print_exc()
         return False
 
@@ -276,7 +277,7 @@ def extract_specific_frame_ffmpeg(
     output_image_p.parent.mkdir(parents=True, exist_ok=True)
 
     if not input_video_p.exists() or input_video_p.stat().st_size == 0:
-        print(f"Error: Input video for frame extraction not found or empty: {input_video_p}")
+        headless_logger.error(f"Input video for frame extraction not found or empty: {input_video_p}")
         dprint(f"EXTRACT_SPECIFIC_FRAME_FFMPEG: Input video {input_video_p} not found or empty. Returning False.")
         return False
 
@@ -296,20 +297,20 @@ def extract_specific_frame_ffmpeg(
         if process.stderr:
             dprint(f"FFmpeg stderr (for frame extraction to {output_image_p}):\n{process.stderr}")
         if not output_image_p.exists() or output_image_p.stat().st_size == 0:
-            print(f"Error: FFmpeg command for frame extraction to {output_image_p} apparently succeeded but output file is missing or empty.")
+            headless_logger.error(f"FFmpeg command for frame extraction to {output_image_p} apparently succeeded but output file is missing or empty.")
             dprint(f"FFmpeg command for {output_image_p} (frame extraction) produced no output. stdout:\n{process.stdout}\nstderr:\n{process.stderr}")
             return False
         return True
     except subprocess.CalledProcessError as e:
-        print(f"Error during FFmpeg frame extraction for {output_image_p}:")
-        print("FFmpeg command:", ' '.join(e.cmd))
-        if e.stdout: print("FFmpeg stdout:\n", e.stdout)
-        if e.stderr: print("FFmpeg stderr:\n", e.stderr)
+        headless_logger.error(f"Error during FFmpeg frame extraction for {output_image_p}:")
+        headless_logger.error(f"FFmpeg command: {' '.join(e.cmd)}")
+        if e.stdout: headless_logger.error(f"FFmpeg stdout:\n{e.stdout}")
+        if e.stderr: headless_logger.error(f"FFmpeg stderr:\n{e.stderr}")
         dprint(f"FFmpeg frame extraction failed for {output_image_p}. Error: {e}")
         if output_image_p.exists(): output_image_p.unlink(missing_ok=True)
         return False
     except FileNotFoundError:
-        print("Error: ffmpeg command not found. Please ensure ffmpeg is installed and in your PATH.")
+        headless_logger.error("ffmpeg command not found. Please ensure ffmpeg is installed and in your PATH.")
         dprint("FFmpeg command not found during frame extraction.")
         raise
 
@@ -327,7 +328,7 @@ def concatenate_videos_ffmpeg(
     temp_dir_p.mkdir(parents=True, exist_ok=True)
 
     if not video_paths:
-        print("No videos to concatenate.")
+        headless_logger.warning("No videos to concatenate.")
         dprint("CONCATENATE_VIDEOS_FFMPEG: No video paths provided. Returning.")
         if output_p.exists(): output_p.unlink(missing_ok=True)
         return
@@ -338,11 +339,11 @@ def concatenate_videos_ffmpeg(
         if resolved_p_item.exists() and resolved_p_item.stat().st_size > 0:
             valid_video_paths.append(resolved_p_item)
         else:
-            print(f"Warning: Video segment {resolved_p_item} for concatenation is missing or empty. Skipping.")
+            headless_logger.warning(f"Video segment {resolved_p_item} for concatenation is missing or empty. Skipping.")
             dprint(f"CONCATENATE_VIDEOS_FFMPEG: Skipping invalid video segment {resolved_p_item}")
 
     if not valid_video_paths:
-        print("No valid video segments found to concatenate after checks.")
+        headless_logger.warning("No valid video segments found to concatenate after checks.")
         dprint("CONCATENATE_VIDEOS_FFMPEG: No valid video segments. Returning.")
         if output_p.exists(): output_p.unlink(missing_ok=True)
         return
@@ -364,23 +365,23 @@ def concatenate_videos_ffmpeg(
     dprint(f"CONCATENATE_VIDEOS_FFMPEG: Running command: {' '.join(cmd)} with list file {filelist_path}")
     try:
         process = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding='utf-8')
-        print(f"Successfully concatenated videos into: {output_p}")
+        headless_logger.essential(f"Successfully concatenated videos into: {output_p}")
         dprint(f"CONCATENATE_VIDEOS_FFMPEG: Success. Output: {output_p}")
         if process.stderr:
             dprint(f"FFmpeg stderr (for concatenation to {output_p}):\n{process.stderr}")
         if not output_p.exists() or output_p.stat().st_size == 0:
-             print(f"Warning: FFmpeg concatenation to {output_p} apparently succeeded but output file is missing or empty.")
+             headless_logger.warning(f"FFmpeg concatenation to {output_p} apparently succeeded but output file is missing or empty.")
              dprint(f"FFmpeg command for {output_p} (concatenation) produced no output. stdout:\n{process.stdout}\nstderr:\n{process.stderr}")
     except subprocess.CalledProcessError as e:
-        print(f"Error during FFmpeg concatenation for {output_p}:")
-        print("FFmpeg command:", ' '.join(e.cmd))
-        if e.stdout: print("FFmpeg stdout:\n", e.stdout)
-        if e.stderr: print("FFmpeg stderr:\n", e.stderr)
+        headless_logger.error(f"Error during FFmpeg concatenation for {output_p}:")
+        headless_logger.error(f"FFmpeg command: {' '.join(e.cmd)}")
+        if e.stdout: headless_logger.error(f"FFmpeg stdout:\n{e.stdout}")
+        if e.stderr: headless_logger.error(f"FFmpeg stderr:\n{e.stderr}")
         dprint(f"FFmpeg concatenation failed for {output_p}. Error: {e}")
         if output_p.exists(): output_p.unlink(missing_ok=True)
         raise
     except FileNotFoundError:
-        print("Error: ffmpeg command not found. Please ensure ffmpeg is installed and in your PATH.")
+        headless_logger.error("ffmpeg command not found. Please ensure ffmpeg is installed and in your PATH.")
         dprint("CONCATENATE_VIDEOS_FFMPEG: ffmpeg command not found.")
         raise
 
@@ -691,6 +692,6 @@ def load_pil_images(
             img = Image.open(p)
             images.append(wgp_convert_func(img))
         except (OSError, ValueError, RuntimeError) as e:
-            print(f"[WARNING] Failed to load image {p}: {e}")
+            headless_logger.warning(f"Failed to load image {p}: {e}")
 
     return images if images else None

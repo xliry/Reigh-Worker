@@ -4,6 +4,8 @@ import numpy as np
 from typing import List, Optional
 from PIL import Image, ImageDraw, ImageFont
 
+from source.core.log import headless_logger
+
 
 def _apply_video_treatment(clip, target_duration: float, target_fps: int, treatment: str, video_name: str = "video"):
     """
@@ -33,12 +35,12 @@ def _apply_video_treatment(clip, target_duration: float, target_fps: int, treatm
         if current_frame_count >= target_frame_count:
             frame_indices = [int(i * (current_frame_count - 1) / (target_frame_count - 1))
                            for i in range(target_frame_count)]
-            print(f"  {video_name}: adjust mode - sampling {target_frame_count} from {current_frame_count} frames (compress)")
+            headless_logger.debug(f"  {video_name}: adjust mode - sampling {target_frame_count} from {current_frame_count} frames (compress)")
         else:
             frame_indices = [int(i * (current_frame_count - 1) / (target_frame_count - 1))
                            for i in range(target_frame_count)]
             duplicates = target_frame_count - len(set(frame_indices))
-            print(f"  {video_name}: adjust mode - sampling {target_frame_count} from {current_frame_count} frames (stretch, {duplicates} duplicates)")
+            headless_logger.debug(f"  {video_name}: adjust mode - sampling {target_frame_count} from {current_frame_count} frames (stretch, {duplicates} duplicates)")
 
     elif treatment == "clip":
         # CLIP MODE: FPS-based temporal sampling
@@ -71,18 +73,18 @@ def _apply_video_treatment(clip, target_duration: float, target_fps: int, treatm
 
         # If video too short, loop
         if len(frame_indices) < target_frame_count:
-            print(f"  {video_name}: clip mode - video too short, looping to fill {target_frame_count} frames")
+            headless_logger.debug(f"  {video_name}: clip mode - video too short, looping to fill {target_frame_count} frames")
             while len(frame_indices) < target_frame_count:
                 remaining = target_frame_count - len(frame_indices)
                 frame_indices.extend(frame_indices[:remaining])
 
-        print(f"  {video_name}: clip mode - sampled {len(frame_indices)} frames from {current_frame_count}")
+        headless_logger.debug(f"  {video_name}: clip mode - sampled {len(frame_indices)} frames from {current_frame_count}")
 
     else:
         raise ValueError(f"Invalid treatment: {treatment}. Must be 'adjust' or 'clip'")
 
     # Extract frames at the specified indices
-    print(f"  {video_name}: extracting {len(frame_indices)} frames...")
+    headless_logger.debug(f"  {video_name}: extracting {len(frame_indices)} frames...")
     frames = []
     for idx in frame_indices:
         time_at_frame = idx / clip.fps
@@ -92,7 +94,7 @@ def _apply_video_treatment(clip, target_duration: float, target_fps: int, treatm
     # Create new clip from resampled frames
     resampled_clip = ImageSequenceClip(frames, fps=target_fps)
 
-    print(f"  {video_name}: resampled to {len(frames)} frames @ {target_fps}fps ({resampled_clip.duration:.2f}s)")
+    headless_logger.debug(f"  {video_name}: resampled to {len(frames)} frames @ {target_fps}fps ({resampled_clip.duration:.2f}s)")
 
     return resampled_clip
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from source.core.log import headless_logger
 from source.media.video.frame_extraction import extract_frames_from_video
 from source.media.video.video_info import get_video_frame_count_and_fps
 from source.media.video.ffmpeg_ops import create_video_from_frames_list
@@ -39,16 +40,16 @@ def apply_brightness_to_video_frames(input_video_path: str, output_video_path: P
     A brightness_adjust of 0 means no change. Negative values darken, positive values brighten.
     """
     try:
-        print(f"Task {task_id_for_logging}: Applying brightness adjustment {brightness_adjust} to {input_video_path}")
+        headless_logger.essential(f"Task {task_id_for_logging}: Applying brightness adjustment {brightness_adjust} to {input_video_path}", task_id=task_id_for_logging)
 
         total_frames, fps = get_video_frame_count_and_fps(input_video_path)
         if total_frames is None or fps is None or total_frames == 0:
-            print(f"[ERROR] Task {task_id_for_logging}: Could not get frame count or fps for {input_video_path}, or video has 0 frames.")
+            headless_logger.error(f"Task {task_id_for_logging}: Could not get frame count or fps for {input_video_path}, or video has 0 frames.", task_id=task_id_for_logging)
             return None
 
         frames = extract_frames_from_video(input_video_path)
         if frames is None:
-            print(f"[ERROR] Task {task_id_for_logging}: Could not extract frames from {input_video_path}")
+            headless_logger.error(f"Task {task_id_for_logging}: Could not extract frames from {input_video_path}", task_id=task_id_for_logging)
             return None
 
         adjusted_frames = []
@@ -60,7 +61,7 @@ def apply_brightness_to_video_frames(input_video_path: str, output_video_path: P
             adjusted_frames.append(adjusted_frame)
 
         if not adjusted_frames or first_frame is None:
-            print(f"[ERROR] Task {task_id_for_logging}: No frames to write for brightness-adjusted video.")
+            headless_logger.error(f"Task {task_id_for_logging}: No frames to write for brightness-adjusted video.", task_id=task_id_for_logging)
             return None
 
         h, w, _ = first_frame.shape
@@ -68,13 +69,13 @@ def apply_brightness_to_video_frames(input_video_path: str, output_video_path: P
 
         created_video_path = create_video_from_frames_list(adjusted_frames, output_video_path, fps, resolution)
         if created_video_path and created_video_path.exists():
-            print(f"Task {task_id_for_logging}: Successfully created brightness-adjusted video at {created_video_path}")
+            headless_logger.essential(f"Task {task_id_for_logging}: Successfully created brightness-adjusted video at {created_video_path}", task_id=task_id_for_logging)
             return created_video_path
         else:
-            print(f"[ERROR] Task {task_id_for_logging}: Failed to create brightness-adjusted video.")
+            headless_logger.error(f"Task {task_id_for_logging}: Failed to create brightness-adjusted video.", task_id=task_id_for_logging)
             return None
     except (OSError, ValueError, RuntimeError) as e:
-        print(f"[ERROR] Task {task_id_for_logging}: Exception in apply_brightness_to_video_frames: {e}")
+        headless_logger.error(f"Task {task_id_for_logging}: Exception in apply_brightness_to_video_frames: {e}", task_id=task_id_for_logging)
         traceback.print_exc()
         return None
 

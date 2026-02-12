@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from source.core.log import headless_logger
+
 
 def download_qwen_vlm_if_needed(model_dir: Path) -> Path:
     """
@@ -28,8 +30,8 @@ def download_qwen_vlm_if_needed(model_dir: Path) -> Path:
     has_all_files = all((model_dir / f).exists() for f in model_files)
 
     if not has_all_files:
-        print(f"[VLM_DOWNLOAD] Downloading Qwen2.5-VL-7B-Instruct to {model_dir}...")
-        print(f"[VLM_DOWNLOAD] This is a one-time download (~16GB). Future runs will use the cached model.")
+        headless_logger.essential(f"[VLM_DOWNLOAD] Downloading Qwen2.5-VL-7B-Instruct to {model_dir}...")
+        headless_logger.essential(f"[VLM_DOWNLOAD] This is a one-time download (~16GB). Future runs will use the cached model.")
 
         try:
             from huggingface_hub import snapshot_download
@@ -41,9 +43,9 @@ def download_qwen_vlm_if_needed(model_dir: Path) -> Path:
                 local_dir_use_symlinks=False,
                 resume_download=True
             )
-            print(f"[VLM_DOWNLOAD] \u2705 Download complete: {model_dir}")
+            headless_logger.essential(f"[VLM_DOWNLOAD] Download complete: {model_dir}")
         except (OSError, RuntimeError, ValueError) as e:
-            print(f"[VLM_DOWNLOAD] \u274c Download failed: {e}")
+            headless_logger.error(f"[VLM_DOWNLOAD] Download failed: {e}")
             raise
 
     return model_dir
