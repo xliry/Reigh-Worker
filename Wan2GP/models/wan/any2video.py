@@ -1661,12 +1661,12 @@ class WanAny2V:
                 import tempfile
                 import sys
 
-                # Add source to path for structure_video_guidance import
-                source_dir = Path(__file__).parent.parent.parent.parent / "source"
-                if str(source_dir) not in sys.path:
-                    sys.path.insert(0, str(source_dir))
+                # Ensure project root is on sys.path for source imports
+                _project_root = str(Path(__file__).parent.parent.parent.parent)
+                if _project_root not in sys.path:
+                    sys.path.insert(0, _project_root)
 
-                from structure_video_guidance import download_and_extract_motion_frames
+                from source.media.structure.download import download_and_extract_motion_frames
 
                 temp_dir = Path(tempfile.gettempdir())
                 guidance_frames = download_and_extract_motion_frames(
