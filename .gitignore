@@ -75,9 +75,10 @@ tests_output/
 # Track all test files
 !tests/
 !tests/README.md
-!tests/CICEK .png
-!tests/CICEK 2.png
-!tests/2AF816ADD8BC6EE937FEA5D5B3061DC047BBD8BA5A77E91A5158BF6C86C9FAD1.jpeg
+tests/*.jpg
+tests/*.png
+tests/*.jpeg
+tests/outputs_ltx2_lora/
 
 # Task database files
 tasks.db-shm
