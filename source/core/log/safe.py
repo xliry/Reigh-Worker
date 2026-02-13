@@ -6,6 +6,29 @@ from typing import Optional, Any
 
 from source.core.log.core import ComponentLogger
 
+__all__ = [
+    "LOG_MAX_STRING_REPR",
+    "LOG_MAX_OBJECT_OUTPUT",
+    "LOG_MAX_COLLECTION_ITEMS",
+    "LOG_MAX_NESTING_DEPTH",
+    "LOG_MAX_JSON_OUTPUT",
+    "LOG_MAX_DEBUG_MESSAGE",
+    "LOG_LARGE_DICT_KEYS",
+    "safe_repr",
+    "safe_dict_repr",
+    "safe_log_params",
+    "safe_json_repr",
+    "safe_log_change",
+    "SafeComponentLogger",
+    "headless_logger_safe",
+    "queue_logger_safe",
+    "orchestrator_logger_safe",
+    "travel_logger_safe",
+    "generation_logger_safe",
+    "model_logger_safe",
+    "task_logger_safe",
+]
+
 
 # =============================================================================
 # GLOBAL LOGGING CONFIGURATION
@@ -71,12 +94,17 @@ def safe_repr(obj: Any, max_length: int = None) -> str:
         # Use reprlib for smart truncation
         result = _safe_repr.repr(obj)
 
+        # reprlib may silently swallow __repr__ errors and return a fallback
+        # like "<ClassName instance at 0x...>". Detect this and re-format.
+        if result.startswith("<") and "instance at" in result:
+            return f"<repr failed: {type(obj).__name__} - repr returned instance placeholder>"
+
         # Additional length limit as backup
         if len(result) > max_length:
             result = result[:max_length] + "...}"
 
         return result
-    except (ValueError, KeyError, TypeError) as e:
+    except (ValueError, KeyError, TypeError, RuntimeError) as e:
         return f"<repr failed: {type(obj).__name__} - {e}>"
 
 

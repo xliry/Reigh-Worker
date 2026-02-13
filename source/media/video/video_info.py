@@ -5,15 +5,16 @@ import time
 
 import cv2
 
+from source.core.log import generation_logger
+
 __all__ = [
     "get_video_frame_count_ffprobe",
-    "_parse_ffprobe_rate",
     "get_video_fps_ffprobe",
     "get_video_frame_count_and_fps",
 ]
 
 
-def get_video_frame_count_ffprobe(video_path: str, dprint=print) -> int | None:
+def get_video_frame_count_ffprobe(input_video_path: str) -> int | None:
     """
     Get accurate frame count using ffprobe (more reliable than OpenCV).
 
@@ -22,8 +23,7 @@ def get_video_frame_count_ffprobe(video_path: str, dprint=print) -> int | None:
     or videos with certain codecs).
 
     Args:
-        video_path: Path to video file
-        dprint: Debug print function
+        input_video_path: Path to video file
 
     Returns:
         Frame count, or None on error
@@ -36,7 +36,7 @@ def get_video_frame_count_ffprobe(video_path: str, dprint=print) -> int | None:
             '-count_packets',
             '-show_entries', 'stream=nb_read_packets',
             '-of', 'csv=p=0',
-            str(video_path)
+            str(input_video_path)
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
@@ -46,14 +46,14 @@ def get_video_frame_count_ffprobe(video_path: str, dprint=print) -> int | None:
                 return frame_count
 
         # Method 2: Fallback to counting frames (slower but reliable)
-        dprint(f"[FFPROBE] Metadata count failed, counting frames manually...")
+        generation_logger.debug(f"[FFPROBE] Metadata count failed, counting frames manually...")
         cmd2 = [
             'ffprobe', '-v', 'error',
             '-select_streams', 'v:0',
             '-count_frames',
             '-show_entries', 'stream=nb_read_frames',
             '-of', 'csv=p=0',
-            str(video_path)
+            str(input_video_path)
         ]
         result2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=120)
 
@@ -65,10 +65,10 @@ def get_video_frame_count_ffprobe(video_path: str, dprint=print) -> int | None:
         return None
 
     except subprocess.TimeoutExpired:
-        dprint(f"[FFPROBE] Timeout getting frame count for {video_path}")
+        generation_logger.warning(f"[FFPROBE] Timeout getting frame count for {input_video_path}")
         return None
     except (subprocess.SubprocessError, OSError, ValueError) as e:
-        dprint(f"[FFPROBE] Error: {e}")
+        generation_logger.error(f"[FFPROBE] Error: {e}")
         return None
 
 
@@ -97,7 +97,7 @@ def _parse_ffprobe_rate(rate_str: str) -> float | None:
         return None
 
 
-def get_video_fps_ffprobe(video_path: str, dprint=print) -> float | None:
+def get_video_fps_ffprobe(input_video_path: str) -> float | None:
     """
     Get FPS using ffprobe (avg_frame_rate preferred; falls back to r_frame_rate).
     This is more reliable than OpenCV for VFR content.
@@ -108,7 +108,7 @@ def get_video_fps_ffprobe(video_path: str, dprint=print) -> float | None:
             "-select_streams", "v:0",
             "-show_entries", "stream=avg_frame_rate,r_frame_rate",
             "-of", "json",
-            str(video_path),
+            str(input_video_path),
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0 or not result.stdout:
@@ -129,14 +129,14 @@ def get_video_fps_ffprobe(video_path: str, dprint=print) -> float | None:
             return fps
         return None
     except subprocess.TimeoutExpired:
-        dprint(f"[FFPROBE] Timeout getting FPS for {video_path}")
+        generation_logger.warning(f"[FFPROBE] Timeout getting FPS for {input_video_path}")
         return None
     except (subprocess.SubprocessError, OSError, ValueError) as e:
-        dprint(f"[FFPROBE] Error getting FPS: {e}")
+        generation_logger.error(f"[FFPROBE] Error getting FPS: {e}")
         return None
 
 
-def get_video_frame_count_and_fps(video_path: str) -> tuple[int, float] | tuple[None, None]:
+def get_video_frame_count_and_fps(input_video_path: str) -> tuple[int, float] | tuple[None, None]:
     """
     Get frame count and FPS from a video file using OpenCV.
 
@@ -147,7 +147,7 @@ def get_video_frame_count_and_fps(video_path: str) -> tuple[int, float] | tuple[
     # Try multiple times in case the video metadata is still being written
     max_attempts = 3
     for attempt in range(max_attempts):
-        cap = cv2.VideoCapture(str(video_path))
+        cap = cv2.VideoCapture(str(input_video_path))
         if not cap.isOpened():
             if attempt < max_attempts - 1:
                 time.sleep(0.5)  # Wait a bit before retrying

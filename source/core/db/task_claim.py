@@ -10,17 +10,22 @@ from postgrest.exceptions import APIError
 
 from source.core.log import headless_logger
 
+__all__ = [
+    "init_db",
+    "init_db_supabase",
+    "check_task_counts_supabase",
+    "check_my_assigned_tasks",
+    "get_oldest_queued_task",
+    "get_oldest_queued_task_supabase",
+]
+
 from . import config as _cfg
 from .config import (
-    STATUS_IN_PROGRESS,
-    dprint,
-)
-
+    STATUS_IN_PROGRESS)
 
 def init_db():
     """Initializes the Supabase database connection."""
     return init_db_supabase()
-
 
 def init_db_supabase():
     """Check if the Supabase tasks table exists and is accessible."""
@@ -37,7 +42,6 @@ def init_db_supabase():
         # Don't exit - the table might exist but have different permissions
         # Let the actual operations try and fail gracefully
         return False
-
 
 def check_task_counts_supabase(run_type: str = "gpu") -> dict | None:
     """Check task counts via Supabase Edge Function before attempting to claim tasks."""
@@ -68,20 +72,20 @@ def check_task_counts_supabase(run_type: str = "gpu") -> dict | None:
             "include_active": True
         }
 
-        dprint(f"DEBUG check_task_counts_supabase: Calling task-counts at {edge_url}")
+        headless_logger.debug(f"DEBUG check_task_counts_supabase: Calling task-counts at {edge_url}")
         resp = httpx.post(edge_url, json=payload, headers=headers, timeout=10)
-        dprint(f"Task-counts response status: {resp.status_code}")
+        headless_logger.debug(f"Task-counts response status: {resp.status_code}")
 
         if resp.status_code == 200:
             counts_data = resp.json()
             # Always log a concise summary so we can observe behavior without enabling debug
             try:
                 totals = counts_data.get('totals', {})
-                dprint(f"[TASK_COUNTS] totals={totals} run_type={payload.get('run_type')}")
+                headless_logger.debug(f"[TASK_COUNTS] totals={totals} run_type={payload.get('run_type')}")
             except (ValueError, KeyError, TypeError):
                 # Fall back to raw text if JSON structure unexpected
-                dprint(f"[TASK_COUNTS] raw_response={resp.text[:500]}")
-            dprint(f"Task-counts result: {counts_data.get('totals', {})}")
+                headless_logger.debug(f"[TASK_COUNTS] raw_response={resp.text[:500]}")
+            headless_logger.debug(f"Task-counts result: {counts_data.get('totals', {})}")
             return counts_data
         else:
             headless_logger.error(f"[TASK_COUNTS] Edge function returned {resp.status_code}: {resp.text[:500]}")
@@ -90,7 +94,6 @@ def check_task_counts_supabase(run_type: str = "gpu") -> dict | None:
     except (httpx.HTTPError, OSError, ValueError) as e_counts:
         headless_logger.error(f"[TASK_COUNTS] Call failed: {e_counts}")
         return None
-
 
 def check_my_assigned_tasks(worker_id: str) -> dict | None:
     """
@@ -118,7 +121,7 @@ def check_my_assigned_tasks(worker_id: str) -> dict | None:
             params = task.get('params', {})
 
             headless_logger.essential(f"[RECOVERY] Found assigned task {task_id} (type={task_type}) - recovering", task_id=task_id)
-            dprint(f"[RECOVERY_DEBUG] Task was assigned to us but we didn't process it - likely lost HTTP response")
+            headless_logger.debug(f"[RECOVERY_DEBUG] Task was assigned to us but we didn't process it - likely lost HTTP response")
 
             # Return in the same format as claim-next-task Edge Function
             return {
@@ -132,9 +135,8 @@ def check_my_assigned_tasks(worker_id: str) -> dict | None:
 
     except (APIError, RuntimeError, ValueError, OSError) as e:
         # Don't let recovery check failures block normal operation
-        dprint(f"[RECOVERY] Failed to check assigned tasks: {e}")
+        headless_logger.debug(f"[RECOVERY] Failed to check assigned tasks: {e}")
         return None
-
 
 def _orchestrator_has_incomplete_children(orchestrator_task_id: str) -> bool:
     """
@@ -146,7 +148,7 @@ def _orchestrator_has_incomplete_children(orchestrator_task_id: str) -> bool:
         for child in children_data:
             status = (child.get("status") or "").lower()
             if status not in ("complete", "failed", "cancelled", "canceled", "error"):
-                dprint(f"[RECOVERY_CHECK] Orchestrator {orchestrator_task_id} has incomplete child {child['id']} (status={status})")
+                headless_logger.debug(f"[RECOVERY_CHECK] Orchestrator {orchestrator_task_id} has incomplete child {child['id']} (status={status})")
                 return True
         return False
 
@@ -172,7 +174,7 @@ def _orchestrator_has_incomplete_children(orchestrator_task_id: str) -> bool:
                     return False  # No children found
                 return _check_children(tasks)
         except (httpx.HTTPError, OSError, ValueError) as e:
-            dprint(f"[RECOVERY_CHECK] Edge function failed: {e}")
+            headless_logger.debug(f"[RECOVERY_CHECK] Edge function failed: {e}")
 
     # Fallback to direct query if edge function not available or failed
     if not _cfg.SUPABASE_CLIENT:
@@ -190,14 +192,12 @@ def _orchestrator_has_incomplete_children(orchestrator_task_id: str) -> bool:
         return _check_children(response.data)
 
     except (APIError, RuntimeError, ValueError, OSError) as e:
-        dprint(f"[RECOVERY_CHECK] Failed to check orchestrator children: {e}")
+        headless_logger.debug(f"[RECOVERY_CHECK] Failed to check orchestrator children: {e}")
         return False  # Can't check, don't block
-
 
 def get_oldest_queued_task():
     """Gets the oldest queued task from Supabase."""
     return get_oldest_queued_task_supabase()
-
 
 def get_oldest_queued_task_supabase(worker_id: str = None):
     """Fetches the oldest task via Supabase Edge Function. First checks task counts to avoid unnecessary claim attempts."""
@@ -210,7 +210,7 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
         headless_logger.error("No worker_id provided to get_oldest_queued_task_supabase")
         return None
 
-    dprint(f"DEBUG: Using worker_id: {worker_id}")
+    headless_logger.debug(f"DEBUG: Using worker_id: {worker_id}")
 
     # =========================================================================
     # RECOVERY (but don't starve queued tasks)
@@ -235,7 +235,7 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
             ttype = ""
         if ttype.endswith("_orchestrator"):
             deferred_orchestrator_recovery = assigned_task
-            dprint(f"[RECOVERY] Deferring orchestrator recovery for {assigned_task.get('task_id')} to avoid starving queued tasks")
+            headless_logger.debug(f"[RECOVERY] Deferring orchestrator recovery for {assigned_task.get('task_id')} to avoid starving queued tasks")
         else:
             return assigned_task
 
@@ -244,11 +244,11 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
     # =========================================================================
 
     # OPTIMIZATION: Check task counts first to avoid unnecessary claim attempts
-    dprint("Checking task counts before attempting to claim...")
+    headless_logger.debug("Checking task counts before attempting to claim...")
     task_counts = check_task_counts_supabase("gpu")
 
     if task_counts is None:
-        dprint("WARNING: Could not check task counts, proceeding with direct claim attempt")
+        headless_logger.debug("WARNING: Could not check task counts, proceeding with direct claim attempt")
     else:
         totals = task_counts.get('totals', {})
         # Gate claim by queued_only to avoid claiming when only active tasks exist
@@ -256,28 +256,28 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
         eligible_queued = totals.get('eligible_queued', 0)
         active_only = totals.get('active_only', 0)
 
-        dprint(f"[CLAIM_DEBUG] Task counts: queued_only={available_tasks}, eligible_queued={eligible_queued}, active_only={active_only}")
+        headless_logger.debug(f"[CLAIM_DEBUG] Task counts: queued_only={available_tasks}, eligible_queued={eligible_queued}, active_only={active_only}")
 
         # Log warning if counts are inconsistent
         if eligible_queued > 0 and available_tasks == 0:
             headless_logger.warning(f"Task count inconsistency detected: eligible_queued={eligible_queued} but queued_only={available_tasks}")
             headless_logger.warning(f"This suggests tasks exist but aren't visible as 'Queued' status - possible replication lag or status corruption")
             # Proceed with claim attempt despite queued_only=0 since eligible_queued>0
-            dprint(f"[CLAIM_DEBUG] Proceeding with claim attempt despite queued_only=0 because eligible_queued={eligible_queued}")
+            headless_logger.debug(f"[CLAIM_DEBUG] Proceeding with claim attempt despite queued_only=0 because eligible_queued={eligible_queued}")
         elif available_tasks <= 0:
-            dprint("No queued tasks according to task-counts, skipping claim attempt")
+            headless_logger.debug("No queued tasks according to task-counts, skipping claim attempt")
             # If we deferred an orchestrator recovery, check if it actually needs re-running.
             # Orchestrators waiting for children should NOT be recovered - they'll complete
             # when their children complete (via complete-task orchestrator check).
             if deferred_orchestrator_recovery:
                 orch_task_id = deferred_orchestrator_recovery.get("task_id")
                 if orch_task_id and _orchestrator_has_incomplete_children(orch_task_id):
-                    dprint(f"[RECOVERY] Skipping orchestrator {orch_task_id} - has incomplete children, will complete via child completion")
+                    headless_logger.debug(f"[RECOVERY] Skipping orchestrator {orch_task_id} - has incomplete children, will complete via child completion")
                     return None
                 return deferred_orchestrator_recovery
             return None
         else:
-            dprint(f"Found {available_tasks} queued tasks, proceeding with claim")
+            headless_logger.debug(f"Found {available_tasks} queued tasks, proceeding with claim")
 
     # Use Edge Function exclusively
     edge_url = (
@@ -288,8 +288,8 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
 
     if edge_url and _cfg.SUPABASE_ACCESS_TOKEN:
         try:
-            dprint(f"DEBUG get_oldest_queued_task_supabase: Calling Edge Function at {edge_url}")
-            dprint(f"DEBUG: Using worker_id: {worker_id}")
+            headless_logger.debug(f"DEBUG get_oldest_queued_task_supabase: Calling Edge Function at {edge_url}")
+            headless_logger.debug(f"DEBUG: Using worker_id: {worker_id}")
 
             headers = {
                 'Content-Type': 'application/json',
@@ -300,7 +300,7 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
             payload = {"worker_id": worker_id, "run_type": "gpu"}
 
             resp = httpx.post(edge_url, json=payload, headers=headers, timeout=15)
-            dprint(f"Edge Function response status: {resp.status_code}")
+            headless_logger.debug(f"Edge Function response status: {resp.status_code}")
 
             if resp.status_code == 200:
                 task_data = resp.json()
@@ -310,10 +310,10 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
                 segment_index = params.get('segment_index') if isinstance(params, dict) else None
 
                 headless_logger.essential(f"[CLAIM] Claimed task {task_id} (type={task_type}, segment_index={segment_index})", task_id=task_id)
-                dprint(f"[CLAIM_DEBUG] Full task data: {task_data}")
+                headless_logger.debug(f"[CLAIM_DEBUG] Full task data: {task_data}")
                 return task_data  # Already in the expected format
             elif resp.status_code == 204:
-                dprint("Edge Function: No queued tasks available")
+                headless_logger.debug("Edge Function: No queued tasks available")
                 # If no queued tasks are claimable right now, fall back to any
                 # deferred orchestrator recovery (lost-response protection).
                 if deferred_orchestrator_recovery:
@@ -327,8 +327,8 @@ def get_oldest_queued_task_supabase(worker_id: str = None):
         except (httpx.HTTPError, OSError, ValueError) as e_edge:
             # Log visibly - this is a critical failure that can cause orphaned tasks
             headless_logger.error(f"[CLAIM] Edge Function call failed: {e_edge}")
-            dprint(f"[CLAIM_DEBUG] Exception type: {type(e_edge).__name__}")
-            dprint(f"[CLAIM_DEBUG] Full traceback: {traceback.format_exc()}")
+            headless_logger.debug(f"[CLAIM_DEBUG] Exception type: {type(e_edge).__name__}")
+            headless_logger.debug(f"[CLAIM_DEBUG] Full traceback: {traceback.format_exc()}")
             if deferred_orchestrator_recovery:
                 return deferred_orchestrator_recovery
             return None

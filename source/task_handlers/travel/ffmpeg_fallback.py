@@ -4,8 +4,7 @@ from pathlib import Path
 
 from ...core.log import travel_logger
 
-
-def attempt_ffmpeg_crossfade_fallback(segment_video_paths: list[str], overlaps: list[int], output_path: Path, task_id: str, dprint) -> bool:
+def attempt_ffmpeg_crossfade_fallback(segment_video_paths: list[str], overlaps: list[int], output_path: Path, task_id: str) -> bool:
     """
     Fallback cross-fade implementation using FFmpeg's xfade filter.
     Achieves the same visual effect as frame-based cross-fade without frame extraction.
@@ -15,7 +14,6 @@ def attempt_ffmpeg_crossfade_fallback(segment_video_paths: list[str], overlaps: 
         overlaps: List of overlap frame counts between segments
         output_path: Path for output video
         task_id: Task ID for logging
-        dprint: Debug print function
 
     Returns:
         bool: True if successful, False otherwise
@@ -25,20 +23,20 @@ def attempt_ffmpeg_crossfade_fallback(segment_video_paths: list[str], overlaps: 
         import cv2
 
         if len(segment_video_paths) < 2:
-            dprint(f"FFmpeg Fallback: Not enough videos to cross-fade ({len(segment_video_paths)})")
+            travel_logger.debug(f"FFmpeg Fallback: Not enough videos to cross-fade ({len(segment_video_paths)})")
             return False
 
         # Get video properties from first segment to calculate timing
         cap = cv2.VideoCapture(segment_video_paths[0])
         if not cap.isOpened():
-            dprint(f"FFmpeg Fallback: Cannot read first video properties")
+            travel_logger.debug(f"FFmpeg Fallback: Cannot read first video properties")
             return False
 
         fps = cap.get(cv2.CAP_PROP_FPS)
         cap.release()
 
         if fps <= 0:
-            dprint(f"FFmpeg Fallback: Invalid FPS ({fps})")
+            travel_logger.debug(f"FFmpeg Fallback: Invalid FPS ({fps})")
             return False
 
         travel_logger.essential(f"FFmpeg fallback: Creating cross-fade with {len(segment_video_paths)} videos at {fps} FPS", task_id=task_id)
@@ -93,27 +91,27 @@ def attempt_ffmpeg_crossfade_fallback(segment_video_paths: list[str], overlaps: 
         ])
 
         travel_logger.debug(f"FFmpeg fallback: Running command: {' '.join(cmd[:10])}...", task_id=task_id)
-        dprint(f"FFmpeg Fallback: Running cross-fade command")
+        travel_logger.debug(f"FFmpeg Fallback: Running cross-fade command")
 
         # Run FFmpeg
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
         if result.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0:
             travel_logger.essential(f"FFmpeg fallback success! Output: {output_path} ({output_path.stat().st_size:,} bytes)", task_id=task_id)
-            dprint(f"FFmpeg Fallback: Success - created {output_path}")
+            travel_logger.debug(f"FFmpeg Fallback: Success - created {output_path}")
             return True
         else:
             travel_logger.error(f"FFmpeg fallback failed with return code {result.returncode}", task_id=task_id)
             if result.stderr:
                 travel_logger.error(f"FFmpeg fallback error: {result.stderr[:200]}...", task_id=task_id)
-            dprint(f"FFmpeg Fallback: Failed - {result.stderr[:100] if result.stderr else 'Unknown error'}")
+            travel_logger.debug(f"FFmpeg Fallback: Failed - {result.stderr[:100] if result.stderr else 'Unknown error'}")
             return False
 
     except subprocess.TimeoutExpired:
         travel_logger.error(f"FFmpeg fallback timeout after 300 seconds", task_id=task_id)
-        dprint(f"FFmpeg Fallback: Timeout")
+        travel_logger.debug(f"FFmpeg Fallback: Timeout")
         return False
     except (subprocess.SubprocessError, OSError, ValueError) as e:
         travel_logger.error(f"FFmpeg fallback exception: {e}", task_id=task_id)
-        dprint(f"FFmpeg Fallback: Exception - {e}")
+        travel_logger.debug(f"FFmpeg Fallback: Exception - {e}")
         return False

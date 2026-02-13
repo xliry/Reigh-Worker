@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from headless_model_management import HeadlessTaskQueue, GenerationTask
 
-from source.task_handlers.queue.worker_thread import worker_loop, _monitor_loop
+from source.task_handlers.queue.task_processor import worker_loop, _monitor_loop
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +69,8 @@ def start_queue(queue: "HeadlessTaskQueue", preload_model=None):
         try:
             # Initialize orchestrator and load model in background
             queue._ensure_orchestrator()
+            if queue.orchestrator is None:
+                raise RuntimeError("Orchestrator initialization failed during preload")
             queue.orchestrator.load_model(preload_model)
             queue.current_model = preload_model
             queue.logger.info(f"Model {preload_model} pre-loaded successfully")

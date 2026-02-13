@@ -12,6 +12,7 @@ All operations communicate with a Supabase PostgreSQL database via Edge Function
 from source.core.db.config import *  # noqa: F401,F403
 from source.core.db.edge_helpers import *  # noqa: F401,F403
 from source.core.db.task_claim import *  # noqa: F401,F403
+from source.core.db.task_status import *  # noqa: F401,F403
 from source.core.db.task_completion import *  # noqa: F401,F403
 from source.core.db.task_polling import *  # noqa: F401,F403
 from source.core.db.task_dependencies import *  # noqa: F401,F403

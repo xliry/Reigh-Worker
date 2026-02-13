@@ -10,13 +10,9 @@ Run with: python -m pytest tests/test_lora_flow.py -v
 import pytest
 from unittest.mock import patch
 import os
-import sys
 from pathlib import Path
 
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from source.task_handlers.tasks.task_conversion import parse_phase_config
+from source.core.params.phase_config_parser import parse_phase_config
 from source.core.params import TaskConfig, LoRAConfig, LoRAStatus
 from source.models.lora.lora_utils import _download_lora_from_url
 
@@ -194,7 +190,7 @@ class TestLoRAFlow:
         # 5. Mock the download step
         with patch('source.models.lora.lora_utils._download_lora_from_url') as mock_download:
             # Mock returns the filename
-            mock_download.side_effect = lambda url, task_id, dprint=None: os.path.basename(url)
+            mock_download.side_effect = lambda url, task_id: os.path.basename(url)
             
             # Simulate what _convert_to_wgp_task does
             for url, mult in list(task_config.lora.get_pending_downloads().items()):
@@ -375,7 +371,7 @@ class TestFromDbTask:
         wgp = config.to_wgp_format()
         
         # _parsed_phase_config should be preserved for model patching
-        assert "_parsed_phase_config" in wgp or "phase_config" in self.TRAVEL_SEGMENT_PARAMS
+        assert "_parsed_phase_config" in wgp
     
     def test_download_failure_excludes_lora(self):
         """If download fails, LoRA should remain PENDING and be excluded from WGP."""

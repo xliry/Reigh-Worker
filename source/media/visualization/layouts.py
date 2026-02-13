@@ -270,7 +270,7 @@ def _create_vertical_layout(
 
     timeline_height = video_stack.h
     timeline_width = 200
-    margin = 20
+    _margin = 20
 
     video_stack_width = video_stack.w
     total_width = timeline_width + video_stack_width

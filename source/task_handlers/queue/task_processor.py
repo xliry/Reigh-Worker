@@ -1,9 +1,14 @@
 """
-Worker-thread logic extracted from HeadlessTaskQueue.
+Task processing, generation execution, and worker/monitor loops.
 
-Contains the worker loop, task processing, generation execution, memory
-cleanup, and monitor loop.  Every public function takes the
-``HeadlessTaskQueue`` instance (aliased *queue*) as its first argument.
+Contains the core logic for processing a single generation task
+(``process_task_impl``), delegating the actual generation to
+headless_wgp.py via the orchestrator (``execute_generation_impl``),
+and the ``worker_loop`` / ``_monitor_loop`` entry-points used by
+``queue_lifecycle``.
+
+Every public function takes the ``HeadlessTaskQueue`` instance
+(aliased *queue*) as its first argument.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import queue as queue_mod
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -19,136 +25,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from headless_model_management import HeadlessTaskQueue, GenerationTask
 
-# Import debug print function from worker
-try:
-    from worker import dprint
-except ImportError:
-    from source.core.log import headless_logger as _fallback_logger
-    def dprint(msg):
-        if os.environ.get('DEBUG'):
-            _fallback_logger.debug(msg)
+# Re-export so callers that previously reached cleanup_memory_after_task
+# via worker_thread (and now via task_processor) continue to work.
+from source.task_handlers.queue.memory_cleanup import cleanup_memory_after_task  # noqa: F401
 
-from source.core.constants import BYTES_PER_GB as BYTES_PER_GIB
-
-
+from source.core.log import queue_logger
 
 
 # ---------------------------------------------------------------------------
-# Memory cleanup
+# Thread safety for WGP global monkey-patching
 # ---------------------------------------------------------------------------
-
-def cleanup_memory_after_task(queue: "HeadlessTaskQueue", task_id: str):
-    """
-    Clean up memory after task completion WITHOUT unloading models.
-
-    This clears PyTorch caches and Python garbage to prevent memory fragmentation
-    that can slow down subsequent generations. Models remain loaded in VRAM.
-
-    Args:
-        queue: The HeadlessTaskQueue instance
-        task_id: ID of the completed task (for logging)
-    """
-    import torch
-    import gc
-
-    try:
-        # Log memory BEFORE cleanup
-        if torch.cuda.is_available():
-            vram_allocated_before = torch.cuda.memory_allocated() / BYTES_PER_GIB
-            vram_reserved_before = torch.cuda.memory_reserved() / BYTES_PER_GIB
-            queue.logger.info(
-                f"[MEMORY_CLEANUP] Task {task_id}: "
-                f"BEFORE - VRAM allocated: {vram_allocated_before:.2f}GB, "
-                f"reserved: {vram_reserved_before:.2f}GB"
-            )
-
-        # Clear uni3c cache if it wasn't used this task (preserves cache for consecutive uni3c tasks)
-        try:
-            from Wan2GP.models.wan.uni3c import clear_uni3c_cache_if_unused
-            clear_uni3c_cache_if_unused()
-        except ImportError:
-            pass  # uni3c module not available
-
-        # Clear PyTorch's CUDA cache (frees unused reserved memory, keeps models)
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            queue.logger.info(f"[MEMORY_CLEANUP] Task {task_id}: Cleared CUDA cache")
-
-        # Run Python garbage collection to free CPU memory
-        collected = gc.collect()
-        queue.logger.info(f"[MEMORY_CLEANUP] Task {task_id}: Garbage collected {collected} objects")
-
-        # Log memory AFTER cleanup
-        if torch.cuda.is_available():
-            vram_allocated_after = torch.cuda.memory_allocated() / BYTES_PER_GIB
-            vram_reserved_after = torch.cuda.memory_reserved() / BYTES_PER_GIB
-            vram_freed = vram_reserved_before - vram_reserved_after
-
-            queue.logger.info(
-                f"[MEMORY_CLEANUP] Task {task_id}: "
-                f"AFTER - VRAM allocated: {vram_allocated_after:.2f}GB, "
-                f"reserved: {vram_reserved_after:.2f}GB"
-            )
-
-            if vram_freed > 0.01:  # Only log if freed >10MB
-                queue.logger.info(
-                    f"[MEMORY_CLEANUP] Task {task_id}: Freed {vram_freed:.2f}GB of reserved VRAM"
-                )
-            else:
-                queue.logger.info(
-                    f"[MEMORY_CLEANUP] Task {task_id}: No significant VRAM freed (models still loaded)"
-                )
-
-    except (RuntimeError, OSError) as e:
-        queue.logger.warning(f"[MEMORY_CLEANUP] Task {task_id}: Failed to cleanup memory: {e}")
-
-
-# ---------------------------------------------------------------------------
-# Worker loop
-# ---------------------------------------------------------------------------
-
-def worker_loop(queue: "HeadlessTaskQueue"):
-    """Main worker loop for processing tasks."""
-    import threading
-    worker_name = threading.current_thread().name
-    queue.logger.info(f"{worker_name} started")
-
-    while queue.running and not queue.shutdown_event.is_set():
-        try:
-            # Get next task (blocks with timeout)
-            try:
-                priority, timestamp, task = queue.task_queue.get(timeout=1.0)
-            except queue_mod.Empty:
-                continue
-
-            # Process the task
-            process_task_impl(queue, task, worker_name)
-
-        except (RuntimeError, ValueError, OSError) as e:
-            queue.logger.error(f"{worker_name} error: {e}\n{traceback.format_exc()}")
-            time.sleep(1.0)
-
-    queue.logger.info(f"{worker_name} stopped")
-
-
-# ---------------------------------------------------------------------------
-# Monitor loop
-# ---------------------------------------------------------------------------
-
-def _monitor_loop(queue: "HeadlessTaskQueue"):
-    """Background monitoring and maintenance loop."""
-    queue.logger.info("Queue monitor started")
-
-    while queue.running and not queue.shutdown_event.is_set():
-        try:
-            # Monitor loop placeholder - future home for memory/queue/timeout monitoring
-            time.sleep(10.0)  # Monitor every 10 seconds
-
-        except (RuntimeError, ValueError, OSError) as e:
-            queue.logger.error(f"Monitor error: {e}\n{traceback.format_exc()}")
-            time.sleep(5.0)
-
-    queue.logger.info("Queue monitor stopped")
+_wgp_patch_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +55,7 @@ def process_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask", worker
         from source.core.log import set_current_task_context  # local import to avoid cycles
         set_current_task_context(task.id)
     except (ImportError, AttributeError, TypeError) as e:
+        # Swallowing is intentional: logging context is optional and failures are debug-only
         logging.getLogger('HeadlessQueue').debug(f"Failed to set task logging context for {task.id}: {e}")
 
     with queue.queue_lock:
@@ -324,6 +212,7 @@ def process_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask", worker
             from source.core.log import set_current_task_context  # local import to avoid cycles
             set_current_task_context(None)
         except (ImportError, AttributeError, TypeError) as e:
+            # Swallowing is intentional: logging context is optional and failures are debug-only
             logging.getLogger('HeadlessQueue').debug(f"Failed to clear task logging context: {e}")
 
 
@@ -354,6 +243,18 @@ def execute_generation_impl(queue: "HeadlessTaskQueue", task: "GenerationTask", 
     queue.logger.info(f"[PHASE_CONFIG_DEBUG] Task {task.id}: generation_params keys: {list(generation_params.keys())}")
 
     # CRITICAL: Apply phase_config patches NOW in the worker thread where wgp is imported
+    # Acquire lock to prevent concurrent tasks from corrupting shared wgp globals
+    with _wgp_patch_lock:
+        return _execute_generation_with_patches(queue, task, worker_name, generation_params)
+
+
+def _execute_generation_with_patches(
+    queue: "HeadlessTaskQueue",
+    task: "GenerationTask",
+    worker_name: str,
+    generation_params: dict,
+):
+    """Run generation with wgp global patching, under _wgp_patch_lock."""
     # Store patch info for cleanup in finally block
     _patch_applied = False
     _parsed_phase_config_for_restore = None
@@ -445,12 +346,12 @@ def execute_generation_impl(queue: "HeadlessTaskQueue", task: "GenerationTask", 
         generation_params.pop("svi2pro", None)
 
     # Log generation parameters for debugging
-    dprint(f"[GENERATION_DEBUG] Task {task.id}: Generation parameters:")
+    queue_logger.debug(f"[GENERATION_DEBUG] Task {task.id}: Generation parameters:", task_id=task.id)
     for key, value in generation_params.items():
         if key in ["video_guide", "video_mask", "image_refs"]:
-            dprint(f"[GENERATION_DEBUG]   {key}: {value}")
+            queue_logger.debug(f"[GENERATION_DEBUG]   {key}: {value}", task_id=task.id)
         elif key in ["video_length", "resolution", "num_inference_steps"]:
-            dprint(f"[GENERATION_DEBUG]   {key}: {value}")
+            queue_logger.debug(f"[GENERATION_DEBUG]   {key}: {value}", task_id=task.id)
 
     # Determine generation type and delegate - wrap in try/finally for patch restoration
     try:
@@ -458,11 +359,11 @@ def execute_generation_impl(queue: "HeadlessTaskQueue", task: "GenerationTask", 
         model_supports_vace = queue._model_supports_vace(task.model)
 
         if model_supports_vace:
-            dprint(f"[GENERATION_DEBUG] Task {task.id}: Using VACE generation path")
+            queue_logger.debug(f"[GENERATION_DEBUG] Task {task.id}: Using VACE generation path", task_id=task.id)
 
             # CRITICAL: VACE models require a video_guide parameter
             if "video_guide" in generation_params and generation_params["video_guide"]:
-                dprint(f"[GENERATION_DEBUG] Task {task.id}: Video guide provided: {generation_params['video_guide']}")
+                queue_logger.debug(f"[GENERATION_DEBUG] Task {task.id}: Video guide provided: {generation_params['video_guide']}", task_id=task.id)
             else:
                 error_msg = f"VACE model '{task.model}' requires a video_guide parameter but none was provided. VACE models cannot perform pure text-to-video generation."
                 queue.logger.error(f"[GENERATION_DEBUG] Task {task.id}: {error_msg}")
@@ -474,7 +375,7 @@ def execute_generation_impl(queue: "HeadlessTaskQueue", task: "GenerationTask", 
                 **generation_params
             )
         elif queue.orchestrator._is_flux():
-            dprint(f"[GENERATION_DEBUG] Task {task.id}: Using Flux generation path")
+            queue_logger.debug(f"[GENERATION_DEBUG] Task {task.id}: Using Flux generation path", task_id=task.id)
 
             # For Flux, map video_length to num_images
             if "video_length" in generation_params:
@@ -486,7 +387,7 @@ def execute_generation_impl(queue: "HeadlessTaskQueue", task: "GenerationTask", 
                 **generation_params
             )
         else:
-            dprint(f"[GENERATION_DEBUG] Task {task.id}: Using T2V generation path")
+            queue_logger.debug(f"[GENERATION_DEBUG] Task {task.id}: Using T2V generation path", task_id=task.id)
 
             # T2V or other models - pass model_type for proper parameter resolution
             # Note: WGP stdout is captured to svi_debug.txt file instead of logger
@@ -556,3 +457,51 @@ def execute_generation_impl(queue: "HeadlessTaskQueue", task: "GenerationTask", 
 
             except (RuntimeError, ImportError, AttributeError, KeyError) as restore_error:
                 queue.logger.warning(f"[SVI2PRO] Failed to restore svi2pro for task {task.id}: {restore_error}")
+
+
+# ---------------------------------------------------------------------------
+# Worker loop
+# ---------------------------------------------------------------------------
+
+def worker_loop(queue: "HeadlessTaskQueue"):
+    """Main worker loop for processing tasks."""
+    import threading
+    worker_name = threading.current_thread().name
+    queue.logger.info(f"{worker_name} started")
+
+    while queue.running and not queue.shutdown_event.is_set():
+        try:
+            # Get next task (blocks with timeout)
+            try:
+                priority, timestamp, task = queue.task_queue.get(timeout=1.0)
+            except queue_mod.Empty:
+                continue
+
+            # Process the task
+            process_task_impl(queue, task, worker_name)
+
+        except (RuntimeError, ValueError, OSError) as e:
+            queue.logger.error(f"{worker_name} error: {e}\n{traceback.format_exc()}")
+            time.sleep(1.0)
+
+    queue.logger.info(f"{worker_name} stopped")
+
+
+# ---------------------------------------------------------------------------
+# Monitor loop
+# ---------------------------------------------------------------------------
+
+def _monitor_loop(queue: "HeadlessTaskQueue"):
+    """Background monitoring and maintenance loop."""
+    queue.logger.info("Queue monitor started")
+
+    while queue.running and not queue.shutdown_event.is_set():
+        try:
+            # Monitor loop placeholder - future home for memory/queue/timeout monitoring
+            time.sleep(10.0)  # Monitor every 10 seconds
+
+        except (RuntimeError, ValueError, OSError) as e:
+            queue.logger.error(f"Monitor error: {e}\n{traceback.format_exc()}")
+            time.sleep(5.0)
+
+    queue.logger.info("Queue monitor stopped")

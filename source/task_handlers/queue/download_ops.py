@@ -15,14 +15,7 @@ from typing import Any, Dict, TYPE_CHECKING
 if TYPE_CHECKING:
     from headless_model_management import HeadlessTaskQueue, GenerationTask
 
-# Import debug print function from worker
-try:
-    from worker import dprint
-except ImportError:
-    from source.core.log import headless_logger as _fallback_logger
-    def dprint(msg):
-        if os.environ.get('DEBUG'):
-            _fallback_logger.debug(msg)
+from source.core.log import is_debug_enabled
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +82,7 @@ def convert_to_wgp_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask")
         task_id=task.id,
         task_type=task.parameters.get('_source_task_type', ''),
         model=task.model,
-        debug_mode=queue.debug_mode
+        debug_mode=is_debug_enabled()
     )
 
     # Add prompt and model
@@ -97,7 +90,7 @@ def convert_to_wgp_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask")
     config.model = task.model
 
     # Log the parsed config
-    if queue.debug_mode:
+    if is_debug_enabled():
         config.log_summary(queue.logger.info)
 
     # Handle LoRA downloads if any are pending
@@ -114,7 +107,7 @@ def convert_to_wgp_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask")
 
             for url, mult in list(config.lora.get_pending_downloads().items()):
                 try:
-                    local_path = _download_lora_from_url(url, task.id, dprint, model_type=task.model)
+                    local_path = _download_lora_from_url(url, task.id, model_type=task.model)
                     if local_path:
                         config.lora.mark_downloaded(url, local_path)
                         queue.logger.info(f"[LORA_DOWNLOAD] Task {task.id}: Downloaded {os.path.basename(local_path)}")
@@ -142,7 +135,7 @@ def convert_to_wgp_task_impl(queue: "HeadlessTaskQueue", task: "GenerationTask")
     for param in ["supabase_url", "supabase_anon_key", "supabase_access_token"]:
         wgp_params.pop(param, None)
 
-    if queue.debug_mode:
+    if is_debug_enabled():
         queue.logger.info(f"[TASK_CONVERSION] Task {task.id}: Converted with {len(wgp_params)} params")
         queue.logger.debug(f"[TASK_CONVERSION] Task {task.id}: LoRAs: {wgp_params.get('activated_loras', [])}")
 

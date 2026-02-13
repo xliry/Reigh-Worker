@@ -2,7 +2,7 @@ import os
 from multiprocessing import Process, Queue
 from source.core.log import headless_logger
 from heartbeat_guardian import guardian_main
-from source.core.constants import BYTES_PER_MB, BYTES_PER_GB
+from source.core.constants import BYTES_PER_MB
 
 
 

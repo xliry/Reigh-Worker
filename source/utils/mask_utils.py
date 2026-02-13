@@ -4,8 +4,13 @@ from pathlib import Path
 
 import numpy as np
 
+from source.core.log import headless_logger
 from source.utils.frame_utils import create_video_from_frames_list
 
+__all__ = [
+    "create_mask_video_from_inactive_indices",
+    "create_simple_first_frame_mask_video",
+]
 
 def create_mask_video_from_inactive_indices(
     total_frames: int,
@@ -13,9 +18,7 @@ def create_mask_video_from_inactive_indices(
     inactive_frame_indices: set[int] | list[int],
     output_path: Path | str,
     fps: int = 16,
-    task_id_for_logging: str = "unknown",
-    *, dprint = print
-) -> Path | None:
+    task_id_for_logging: str = "unknown") -> Path | None:
     """
     Create a mask video where:
     - Black frames (0) = inactive/keep original - don't edit these frames
@@ -28,21 +31,20 @@ def create_mask_video_from_inactive_indices(
         output_path: Where to save the mask video
         fps: Frames per second for the output video
         task_id_for_logging: Task ID for debug logging
-        dprint: Print function for logging
 
     Returns:
         Path to created mask video, or None if creation failed
     """
     try:
         if total_frames <= 0:
-            dprint(f"[WARNING] Task {task_id_for_logging}: Cannot create mask video with {total_frames} frames")
+            headless_logger.warning(f"Task {task_id_for_logging}: Cannot create mask video with {total_frames} frames", task_id=task_id_for_logging)
             return None
 
         h, w = resolution_wh[1], resolution_wh[0]  # height, width
         inactive_set = set(inactive_frame_indices) if not isinstance(inactive_frame_indices, set) else inactive_frame_indices
 
-        dprint(f"Task {task_id_for_logging}: Creating mask video - total_frames={total_frames}, "
-               f"inactive_indices={sorted(list(inactive_set))[:10]}{'...' if len(inactive_set) > 10 else ''}")
+        headless_logger.debug(f"Task {task_id_for_logging}: Creating mask video - total_frames={total_frames}, "
+               f"inactive_indices={sorted(list(inactive_set))[:10]}{'...' if len(inactive_set) > 10 else ''}", task_id=task_id_for_logging)
 
         # Create mask frames: 0 (black) for inactive, 255 (white) for active
         mask_frames_buf: list[np.ndarray] = [
@@ -56,27 +58,19 @@ def create_mask_video_from_inactive_indices(
             fps,
             resolution_wh
         )
-
-        if created_mask_video and created_mask_video.exists():
-            dprint(f"Task {task_id_for_logging}: Mask video created successfully at {created_mask_video}")
-            return created_mask_video
-        else:
-            dprint(f"[WARNING] Task {task_id_for_logging}: Failed to create mask video at {output_path}")
-            return None
+        headless_logger.debug(f"Task {task_id_for_logging}: Mask video created successfully at {created_mask_video}", task_id=task_id_for_logging)
+        return created_mask_video
 
     except (OSError, ValueError, RuntimeError) as e:
-        dprint(f"[ERROR] Task {task_id_for_logging}: Mask video creation failed: {e}")
+        headless_logger.error(f"Task {task_id_for_logging}: Mask video creation failed: {e}", task_id=task_id_for_logging)
         return None
-
 
 def create_simple_first_frame_mask_video(
     total_frames: int,
     resolution_wh: tuple[int, int],
     output_path: Path | str,
     fps: int = 16,
-    task_id_for_logging: str = "unknown",
-    *, dprint = print
-) -> Path | None:
+    task_id_for_logging: str = "unknown") -> Path | None:
     """
     Convenience function to create a mask video where only the first frame is inactive (black).
     This is useful for workflows where you want to keep the first frame unchanged
@@ -91,6 +85,4 @@ def create_simple_first_frame_mask_video(
         inactive_frame_indices={0},  # Only first frame is inactive
         output_path=output_path,
         fps=fps,
-        task_id_for_logging=task_id_for_logging,
-        dprint=dprint
-    )
+        task_id_for_logging=task_id_for_logging)

@@ -3,7 +3,6 @@ Task polling, output queries, and parameter retrieval.
 """
 import os
 import time
-import traceback
 from pathlib import Path
 
 import httpx
@@ -11,16 +10,20 @@ from postgrest.exceptions import APIError
 
 from source.core.log import headless_logger
 
+__all__ = [
+    "poll_task_status",
+    "get_task_output_location_from_db",
+    "get_task_params",
+    "get_abs_path_from_db_path",
+]
+
 from . import config as _cfg
 from .config import (
     STATUS_QUEUED,
     STATUS_IN_PROGRESS,
     STATUS_COMPLETE,
-    STATUS_FAILED,
-    dprint,
-)
+    STATUS_FAILED)
 from .edge_helpers import _call_edge_function_with_retry
-
 
 def poll_task_status(task_id: str, poll_interval_seconds: int = 10, timeout_seconds: int = 1800, db_path: str | None = None) -> str | None:
     """
@@ -86,7 +89,6 @@ def poll_task_status(task_id: str, poll_interval_seconds: int = 10, timeout_seco
 
         time.sleep(poll_interval_seconds)
 
-
 # Helper to query DB for a specific task's output (needed by segment handler)
 def get_task_output_location_from_db(task_id_to_find: str) -> str | None:
     """
@@ -101,7 +103,7 @@ def get_task_output_location_from_db(task_id_to_find: str) -> str | None:
     Returns:
         Output location string if task is complete, None otherwise
     """
-    dprint(f"Fetching output location for task: {task_id_to_find}")
+    headless_logger.debug(f"Fetching output location for task: {task_id_to_find}")
 
     # Build edge function URL
     edge_url = (
@@ -147,13 +149,13 @@ def get_task_output_location_from_db(task_id_to_find: str) -> str | None:
             output_location = data.get("output_location")
 
             if status == STATUS_COMPLETE and output_location:
-                dprint(f"Task {task_id_to_find} output fetched successfully")
+                headless_logger.debug(f"Task {task_id_to_find} output fetched successfully")
                 return output_location
             else:
-                dprint(f"Task {task_id_to_find} not complete or no output. Status: {status}")
+                headless_logger.debug(f"Task {task_id_to_find} not complete or no output. Status: {status}")
                 return None
         elif resp and resp.status_code == 404:
-            dprint(f"Task {task_id_to_find} not found")
+            headless_logger.debug(f"Task {task_id_to_find} not found")
             return None
         else:
             status_code = resp.status_code if resp else "no response"
@@ -161,14 +163,12 @@ def get_task_output_location_from_db(task_id_to_find: str) -> str | None:
             return None
 
     except (httpx.HTTPError, OSError, ValueError) as e:
-        headless_logger.error(f"get-task-output exception for {task_id_to_find}: {e}", task_id=task_id_to_find)
-        traceback.print_exc()
+        headless_logger.error(f"get-task-output exception for {task_id_to_find}: {e}", task_id=task_id_to_find, exc_info=True)
         return None
-
 
 def get_task_params(task_id: str) -> str | None:
     """Gets the raw params JSON string for a given task ID via edge function."""
-    dprint(f"Fetching params for task: {task_id}")
+    headless_logger.debug(f"Fetching params for task: {task_id}")
 
     # Build edge function URL
     edge_url = (
@@ -184,7 +184,7 @@ def get_task_params(task_id: str) -> str | None:
                 if resp.data:
                     return resp.data.get("params")
             except (APIError, RuntimeError, ValueError, OSError) as e:
-                dprint(f"Error getting task params for {task_id}: {e}")
+                headless_logger.debug(f"Error getting task params for {task_id}: {e}")
         return None
 
     headers = {
@@ -208,7 +208,7 @@ def get_task_params(task_id: str) -> str | None:
         )
 
         if edge_error:
-            dprint(f"get-task-output (params) failed for {task_id}: {edge_error}")
+            headless_logger.debug(f"get-task-output (params) failed for {task_id}: {edge_error}")
             return None
 
         if resp and resp.status_code == 200:
@@ -217,11 +217,10 @@ def get_task_params(task_id: str) -> str | None:
         return None
 
     except (httpx.HTTPError, OSError, ValueError) as e:
-        dprint(f"Error getting task params for {task_id}: {e}")
+        headless_logger.debug(f"Error getting task params for {task_id}: {e}")
         return None
 
-
-def get_abs_path_from_db_path(db_path: str, dprint) -> Path | None:
+def get_abs_path_from_db_path(db_path: str) -> Path | None:
     """
     Helper to resolve a path from the DB to a usable absolute path.
     Assumes paths from Supabase are already absolute or valid URLs.
@@ -235,5 +234,5 @@ def get_abs_path_from_db_path(db_path: str, dprint) -> Path | None:
     if resolved_path and resolved_path.exists():
         return resolved_path
     else:
-        dprint(f"Warning: Resolved path '{resolved_path}' from DB path '{db_path}' does not exist.")
+        headless_logger.debug(f"Warning: Resolved path '{resolved_path}' from DB path '{db_path}' does not exist.")
         return None

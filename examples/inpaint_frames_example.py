@@ -149,7 +149,6 @@ def run_inpaint_frames(
             main_output_dir_base=output_dir.parent,
             task_id=task_id,
             task_queue=task_queue,
-            dprint=print
         )
 
         generation_time = time.time() - start_time

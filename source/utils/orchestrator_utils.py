@@ -1,7 +1,13 @@
 """Orchestrator parameter extraction and failure reporting utilities."""
 
+from source.core.log import headless_logger
 
-def extract_orchestrator_parameters(db_task_params: dict, task_id: str = "unknown", dprint=None) -> dict:
+__all__ = [
+    "extract_orchestrator_parameters",
+    "report_orchestrator_failure",
+]
+
+def extract_orchestrator_parameters(db_task_params: dict, task_id: str = "unknown") -> dict:
     """
     Centralized extraction of parameters from orchestrator_details.
 
@@ -11,7 +17,6 @@ def extract_orchestrator_parameters(db_task_params: dict, task_id: str = "unknow
     Args:
         db_task_params: Raw task parameters from database
         task_id: Task ID for logging
-        dprint: Optional debug print function
 
     Returns:
         Dict with extracted parameters added at the top level
@@ -20,8 +25,7 @@ def extract_orchestrator_parameters(db_task_params: dict, task_id: str = "unknow
 
     orchestrator_details = db_task_params.get("orchestrator_details", {})
     if orchestrator_details:
-        if dprint:
-            dprint(f"Task {task_id}: Found orchestrator_details with {len(orchestrator_details)} parameters")
+        headless_logger.debug(f"Task {task_id}: Found orchestrator_details with {len(orchestrator_details)} parameters", task_id=task_id)
 
         # Extract specific parameters that should be available at top level
         extraction_map = {
@@ -72,18 +76,16 @@ def extract_orchestrator_parameters(db_task_params: dict, task_id: str = "unknow
                         continue
                     extracted_params[param_key] = value
                     extracted_count += 1
-                    if dprint:
-                        dprint(f"Task {task_id}: Extracted {orchestrator_key} from orchestrator_details")
+                    headless_logger.debug(f"Task {task_id}: Extracted {orchestrator_key} from orchestrator_details", task_id=task_id)
 
         # Note: orchestrator_details is already in db_task_params, no need to duplicate
 
-        if dprint and extracted_count > 0:
-            dprint(f"Task {task_id}: Extracted {extracted_count} parameters from orchestrator_details")
+        if extracted_count > 0:
+            headless_logger.debug(f"Task {task_id}: Extracted {extracted_count} parameters from orchestrator_details", task_id=task_id)
 
     return extracted_params
 
-
-def report_orchestrator_failure(task_params_dict: dict, error_msg: str, dprint: callable = print) -> None:
+def report_orchestrator_failure(task_params_dict: dict, error_msg: str) -> None:
     """Update the parent orchestrator task to FAILED when a sub-task encounters a fatal error.
 
     Args:
@@ -91,13 +93,12 @@ def report_orchestrator_failure(task_params_dict: dict, error_msg: str, dprint: 
             It is expected to contain a reference to the orchestrator via one
             of the standard keys (e.g. ``orchestrator_task_id_ref``).
         error_msg: Human-readable message describing the failure.
-        dprint: Debug print helper (typically passed from the caller).
     """
     # Defer import to avoid potential circular dependencies at module import time
     try:
         from source import db_operations as db_ops  # type: ignore
     except ImportError as e:  # pragma: no cover
-        dprint(f"[report_orchestrator_failure] Could not import db_operations: {e}")
+        headless_logger.error(f"[report_orchestrator_failure] Could not import db_operations: {e}")
         return
 
     orchestrator_id = None
@@ -106,14 +107,13 @@ def report_orchestrator_failure(task_params_dict: dict, error_msg: str, dprint: 
         "orchestrator_task_id_ref",
         "orchestrator_task_id",
         "parent_orchestrator_task_id",
-        "orchestrator_id",
-    ):
+        "orchestrator_id"):
         orchestrator_id = task_params_dict.get(key)
         if orchestrator_id:
             break
 
     if not orchestrator_id:
-        dprint(
+        headless_logger.warning(
             f"[report_orchestrator_failure] No orchestrator reference found in payload. Message: {error_msg}"
         )
         return
@@ -125,12 +125,11 @@ def report_orchestrator_failure(task_params_dict: dict, error_msg: str, dprint: 
         db_ops.update_task_status(
             orchestrator_id,
             db_ops.STATUS_FAILED,
-            truncated_msg,
-        )
-        dprint(
+            truncated_msg)
+        headless_logger.debug(
             f"[report_orchestrator_failure] Marked orchestrator task {orchestrator_id} as FAILED with message: {truncated_msg}"
         )
     except (OSError, ValueError, RuntimeError) as e_update:  # pragma: no cover
-        dprint(
+        headless_logger.error(
             f"[report_orchestrator_failure] Failed to update orchestrator status for {orchestrator_id}: {e_update}"
         )

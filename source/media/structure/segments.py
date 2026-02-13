@@ -2,16 +2,21 @@
 
 import numpy as np
 from pathlib import Path
-from typing import List, Tuple, Optional, Callable
-import traceback
-
+from typing import List, Tuple, Optional
+from source.core.log import generation_logger
 from source.media.structure.tracker import GuidanceTracker
 from source.media.structure.download import download_and_extract_motion_frames
-from source.media.structure.generation import (
+from source.media.structure.compositing import (
     create_composite_guidance_video,
-    load_structure_video_frames_with_range,
 )
-from source.media.structure.preprocessors import process_structure_frames
+
+__all__ = [
+    "apply_structure_motion_with_tracking",
+    "segment_has_structure_overlap",
+    "calculate_segment_guidance_position",
+    "calculate_segment_stitched_position",
+    "extract_segment_structure_guidance",
+]
 
 
 def apply_structure_motion_with_tracking(
@@ -28,10 +33,6 @@ def apply_structure_motion_with_tracking(
     structure_guidance_video_url: str | None = None,
     segment_processing_dir: Path | None = None,
     structure_guidance_frame_offset: int = 0,
-    # Legacy parameters for backward compatibility
-    structure_motion_video_url: str | None = None,
-    structure_motion_frame_offset: int = 0,
-    dprint: Callable = print
 ) -> List[np.ndarray]:
     """
     Apply structure guidance to unguidanced frames (called by segment workers).
@@ -56,51 +57,43 @@ def apply_structure_motion_with_tracking(
         structure_guidance_video_url: URL/path to pre-computed guidance video from orchestrator (REQUIRED)
         segment_processing_dir: Directory for downloads (required)
         structure_guidance_frame_offset: Starting frame offset in the guidance video
-        dprint: Debug print function
 
     Returns:
         Updated frames list with structure guidance applied
     """
-    # Backward compatibility: merge old and new parameter names
-    if structure_guidance_video_url is None and structure_motion_video_url is not None:
-        structure_guidance_video_url = structure_motion_video_url
-    if structure_guidance_frame_offset == 0 and structure_motion_frame_offset != 0:
-        structure_guidance_frame_offset = structure_motion_frame_offset
-
     # Get unguidanced ranges from tracker (not pixel inspection!)
     unguidanced_ranges = guidance_tracker.get_unguidanced_ranges()
 
     if not unguidanced_ranges:
-        dprint(f"[STRUCTURE_VIDEO] No unguidanced frames found")
+        generation_logger.debug(f"[STRUCTURE_VIDEO] No unguidanced frames found")
         return frames_for_guide_list
 
     # Calculate total frames needed
     total_unguidanced = sum(end - start + 1 for start, end in unguidanced_ranges)
 
-    dprint(f"[STRUCTURE_VIDEO] Processing {total_unguidanced} unguidanced frames across {len(unguidanced_ranges)} ranges")
+    generation_logger.debug(f"[STRUCTURE_VIDEO] Processing {total_unguidanced} unguidanced frames across {len(unguidanced_ranges)} ranges")
 
     # ===== PRE-WARPED VIDEO PATH (FASTER) =====
     if structure_guidance_video_url:
-        dprint(f"[STRUCTURE_VIDEO] ========== FAST PATH ACTIVATED ==========")
-        dprint(f"[STRUCTURE_VIDEO] Using pre-warped guidance video (fast path)")
-        dprint(f"[STRUCTURE_VIDEO] Type: {structure_type}")
-        dprint(f"[STRUCTURE_VIDEO] URL/Path: {structure_guidance_video_url}")
+        generation_logger.debug(f"[STRUCTURE_VIDEO] ========== FAST PATH ACTIVATED ==========")
+        generation_logger.debug(f"[STRUCTURE_VIDEO] Using pre-warped guidance video (fast path)")
+        generation_logger.debug(f"[STRUCTURE_VIDEO] Type: {structure_type}")
+        generation_logger.debug(f"[STRUCTURE_VIDEO] URL/Path: {structure_guidance_video_url}")
 
         if not segment_processing_dir:
             raise ValueError("segment_processing_dir required when using structure_guidance_video_url")
 
         try:
             # Download and extract THIS segment's portion of guidance frames
-            dprint(f"[STRUCTURE_VIDEO] Extracting frames starting at offset {structure_guidance_frame_offset}")
+            generation_logger.debug(f"[STRUCTURE_VIDEO] Extracting frames starting at offset {structure_guidance_frame_offset}")
             guidance_frames = download_and_extract_motion_frames(
                 structure_motion_video_url=structure_guidance_video_url,  # Function still uses old param name internally
                 frame_start=structure_guidance_frame_offset,
                 frame_count=total_unguidanced,
                 download_dir=segment_processing_dir,
-                dprint=dprint
             )
 
-            dprint(f"[STRUCTURE_VIDEO] Successfully extracted {len(guidance_frames)} guidance frames")
+            generation_logger.debug(f"[STRUCTURE_VIDEO] Successfully extracted {len(guidance_frames)} guidance frames")
 
             # Drop guidance frames directly into unguidanced ranges
             updated_frames = frames_for_guide_list.copy()
@@ -108,7 +101,7 @@ def apply_structure_motion_with_tracking(
             frames_filled = 0
 
             for range_start, range_end in unguidanced_ranges:
-                dprint(f"[STRUCTURE_VIDEO] Filling range {range_start}-{range_end}")
+                generation_logger.debug(f"[STRUCTURE_VIDEO] Filling range {range_start}-{range_end}")
 
                 for frame_idx in range(range_start, range_end + 1):
                     if guidance_frame_idx < len(guidance_frames):
@@ -117,26 +110,25 @@ def apply_structure_motion_with_tracking(
                         guidance_frame_idx += 1
                         frames_filled += 1
                     else:
-                        dprint(f"[STRUCTURE_VIDEO] Warning: Ran out of guidance frames at frame {frame_idx}")
+                        generation_logger.warning(f"[STRUCTURE_VIDEO] Warning: Ran out of guidance frames at frame {frame_idx}")
                         break
 
-            dprint(f"[STRUCTURE_VIDEO] \u2713 FAST PATH SUCCESS: Filled {frames_filled} frames with {structure_type} visualizations")
-            dprint(f"[STRUCTURE_VIDEO] ==========================================")
+            generation_logger.debug(f"[STRUCTURE_VIDEO] FAST PATH SUCCESS: Filled {frames_filled} frames with {structure_type} visualizations")
+            generation_logger.debug(f"[STRUCTURE_VIDEO] ==========================================")
             return updated_frames
 
         except (OSError, ValueError, RuntimeError) as e:
-            dprint(f"[ERROR] \u2717 FAST PATH FAILED: {e}")
-            dprint(f"[ERROR] Structure guidance could not be applied")
-            traceback.print_exc()
+            generation_logger.error(f"[ERROR] FAST PATH FAILED: {e}", exc_info=True)
+            generation_logger.error(f"[ERROR] Structure guidance could not be applied")
             # Return original frames unchanged
             return frames_for_guide_list
 
     # No pre-computed guidance video provided
-    dprint(f"[STRUCTURE_VIDEO] ========== NO GUIDANCE VIDEO ==========")
-    dprint(f"[STRUCTURE_VIDEO] structure_guidance_video_url is None or empty")
-    dprint(f"[STRUCTURE_VIDEO] Reason: Orchestrator didn't provide pre-computed guidance video")
-    dprint(f"[STRUCTURE_VIDEO] Cannot apply structure guidance - returning frames unchanged")
-    dprint(f"[STRUCTURE_VIDEO] =========================================")
+    generation_logger.debug(f"[STRUCTURE_VIDEO] ========== NO GUIDANCE VIDEO ==========")
+    generation_logger.debug(f"[STRUCTURE_VIDEO] structure_guidance_video_url is None or empty")
+    generation_logger.debug(f"[STRUCTURE_VIDEO] Reason: Orchestrator didn't provide pre-computed guidance video")
+    generation_logger.debug(f"[STRUCTURE_VIDEO] Cannot apply structure guidance - returning frames unchanged")
+    generation_logger.debug(f"[STRUCTURE_VIDEO] =========================================")
     return frames_for_guide_list
 
 
@@ -145,7 +137,6 @@ def segment_has_structure_overlap(
     segment_frames_expanded: List[int],
     frame_overlap_expanded: List[int],
     structure_videos: List[dict],
-    dprint: Callable = lambda x: None
 ) -> bool:
     """
     Check if a segment overlaps with any structure video config.
@@ -158,7 +149,6 @@ def segment_has_structure_overlap(
         segment_frames_expanded: List of frame counts per segment
         frame_overlap_expanded: List of overlap values between segments (unused, kept for API compat)
         structure_videos: List of structure video configs
-        dprint: Debug print function
 
     Returns:
         True if segment overlaps with at least one config, False otherwise
@@ -168,7 +158,7 @@ def segment_has_structure_overlap(
 
     # Use GUIDANCE timeline (matches UX) - not stitched timeline
     seg_start, seg_frames = calculate_segment_guidance_position(
-        segment_index, segment_frames_expanded, dprint
+        segment_index, segment_frames_expanded,
     )
     seg_end = seg_start + seg_frames
 
@@ -178,17 +168,16 @@ def segment_has_structure_overlap(
 
         # Check overlap
         if cfg_start < seg_end and cfg_end > seg_start:
-            dprint(f"[OVERLAP_CHECK] Segment {segment_index} [{seg_start}, {seg_end}) overlaps with config [{cfg_start}, {cfg_end})")
+            generation_logger.debug(f"[OVERLAP_CHECK] Segment {segment_index} [{seg_start}, {seg_end}) overlaps with config [{cfg_start}, {cfg_end})")
             return True
 
-    dprint(f"[OVERLAP_CHECK] Segment {segment_index} [{seg_start}, {seg_end}) has NO overlap with any config")
+    generation_logger.debug(f"[OVERLAP_CHECK] Segment {segment_index} [{seg_start}, {seg_end}) has NO overlap with any config")
     return False
 
 
 def calculate_segment_guidance_position(
     segment_index: int,
     segment_frames_expanded: List[int],
-    dprint: Callable = print
 ) -> Tuple[int, int]:
     """
     Calculate a segment's start position and frame count in the GUIDANCE timeline.
@@ -199,7 +188,6 @@ def calculate_segment_guidance_position(
     Args:
         segment_index: Index of the segment (0-based)
         segment_frames_expanded: List of frame counts per segment
-        dprint: Debug print function
 
     Returns:
         Tuple of (guidance_start, frame_count) for this segment
@@ -207,7 +195,7 @@ def calculate_segment_guidance_position(
     guidance_start = sum(segment_frames_expanded[:segment_index])
     frame_count = segment_frames_expanded[segment_index] if segment_index < len(segment_frames_expanded) else 81
 
-    dprint(f"[SEGMENT_POS] Segment {segment_index}: guidance_start={guidance_start}, frame_count={frame_count} (guidance timeline)")
+    generation_logger.debug(f"[SEGMENT_POS] Segment {segment_index}: guidance_start={guidance_start}, frame_count={frame_count} (guidance timeline)")
     return guidance_start, frame_count
 
 
@@ -215,7 +203,6 @@ def calculate_segment_stitched_position(
     segment_index: int,
     segment_frames_expanded: List[int],
     frame_overlap_expanded: List[int],
-    dprint: Callable = print
 ) -> Tuple[int, int]:
     """
     Calculate a segment's start position and frame count in the STITCHED timeline.
@@ -228,7 +215,6 @@ def calculate_segment_stitched_position(
         segment_index: Index of the segment (0-based)
         segment_frames_expanded: List of frame counts per segment
         frame_overlap_expanded: List of overlap values between segments
-        dprint: Debug print function
 
     Returns:
         Tuple of (stitched_start, frame_count) for this segment
@@ -251,7 +237,7 @@ def calculate_segment_stitched_position(
 
     frame_count = segment_frames_expanded[segment_index] if segment_index < len(segment_frames_expanded) else 81
 
-    dprint(f"[SEGMENT_POS] Segment {segment_index}: stitched_start={stitched_start}, frame_count={frame_count} (stitched timeline)")
+    generation_logger.debug(f"[SEGMENT_POS] Segment {segment_index}: stitched_start={stitched_start}, frame_count={frame_count} (stitched timeline)")
     return stitched_start, frame_count
 
 
@@ -267,7 +253,6 @@ def extract_segment_structure_guidance(
     canny_intensity: float = 1.0,
     depth_contrast: float = 1.0,
     download_dir: Optional[Path] = None,
-    dprint: Callable = print
 ) -> Optional[Path]:
     """
     Extract structure guidance for a single segment from the full structure_videos config.
@@ -288,37 +273,36 @@ def extract_segment_structure_guidance(
         canny_intensity: Canny edge intensity
         depth_contrast: Depth map contrast
         download_dir: Directory for downloading source videos
-        dprint: Debug print function
 
     Returns:
         Path to the created segment guidance video, or None if no configs apply
     """
     # Calculate total guidance timeline for context
     total_guidance_frames = sum(segment_frames_expanded)
-    dprint(f"[SEGMENT_GUIDANCE] ========== SEGMENT {segment_index} GUIDANCE EXTRACTION ==========")
-    dprint(f"[SEGMENT_GUIDANCE] Total guidance timeline: {total_guidance_frames} frames")
-    dprint(f"[SEGMENT_GUIDANCE] Segment frames: {segment_frames_expanded}")
+    generation_logger.debug(f"[SEGMENT_GUIDANCE] ========== SEGMENT {segment_index} GUIDANCE EXTRACTION ==========")
+    generation_logger.debug(f"[SEGMENT_GUIDANCE] Total guidance timeline: {total_guidance_frames} frames")
+    generation_logger.debug(f"[SEGMENT_GUIDANCE] Segment frames: {segment_frames_expanded}")
 
     if not structure_videos:
-        dprint(f"[SEGMENT_GUIDANCE] No structure_videos provided, skipping")
+        generation_logger.debug(f"[SEGMENT_GUIDANCE] No structure_videos provided, skipping")
         return None
 
     # Calculate this segment's position in the GUIDANCE timeline (matches UX)
     seg_start, seg_frames = calculate_segment_guidance_position(
-        segment_index, segment_frames_expanded, dprint
+        segment_index, segment_frames_expanded,
     )
     seg_end = seg_start + seg_frames
 
-    dprint(f"[SEGMENT_GUIDANCE] Segment {segment_index} covers GUIDANCE frames [{seg_start}, {seg_end})")
+    generation_logger.debug(f"[SEGMENT_GUIDANCE] Segment {segment_index} covers GUIDANCE frames [{seg_start}, {seg_end})")
 
     # Log structure video configs for debugging
-    dprint(f"[SEGMENT_GUIDANCE] Checking {len(structure_videos)} structure_videos configs:")
+    generation_logger.debug(f"[SEGMENT_GUIDANCE] Checking {len(structure_videos)} structure_videos configs:")
     for i, cfg in enumerate(structure_videos):
         cfg_start = cfg.get("start_frame", 0)
         cfg_end = cfg.get("end_frame", 0)
         overlaps = cfg_start < seg_end and cfg_end > seg_start
-        status = "\u2713 OVERLAPS" if overlaps else "\u2717 no overlap"
-        dprint(f"[SEGMENT_GUIDANCE]   Config {i}: [{cfg_start}, {cfg_end}) {status}")
+        status = "OVERLAPS" if overlaps else "no overlap"
+        generation_logger.debug(f"[SEGMENT_GUIDANCE]   Config {i}: [{cfg_start}, {cfg_end}) {status}")
 
     # Extract structure_type from configs (all must be same type)
     structure_types = set()
@@ -380,18 +364,18 @@ def extract_segment_structure_guidance(
                 "motion_strength": cfg.get("motion_strength", motion_strength),
             }
 
-            dprint(f"[SEGMENT_GUIDANCE] Config overlaps: stitched [{cfg_start},{cfg_end}) -> local [{local_start},{local_end})")
-            dprint(f"  Source frames: [{new_src_start}, {new_src_end})")
+            generation_logger.debug(f"[SEGMENT_GUIDANCE] Config overlaps: stitched [{cfg_start},{cfg_end}) -> local [{local_start},{local_end})")
+            generation_logger.debug(f"  Source frames: [{new_src_start}, {new_src_end})")
             relevant_configs.append(transformed_cfg)
 
     if not relevant_configs:
         # No overlap = no structure guidance needed for this segment
         # Return None so the segment proceeds without structure guidance entirely
         # This is cleaner than creating an all-neutral video that gets zeroed anyway
-        dprint(f"[SEGMENT_GUIDANCE] No configs overlap with segment {segment_index}, skipping structure guidance")
+        generation_logger.debug(f"[SEGMENT_GUIDANCE] No configs overlap with segment {segment_index}, skipping structure guidance")
         return None
 
-    dprint(f"[SEGMENT_GUIDANCE] Found {len(relevant_configs)} overlapping configs")
+    generation_logger.debug(f"[SEGMENT_GUIDANCE] Found {len(relevant_configs)} overlapping configs")
 
     # Create mini-composite using the transformed configs
     return create_composite_guidance_video(
@@ -405,5 +389,4 @@ def extract_segment_structure_guidance(
         canny_intensity=canny_intensity,
         depth_contrast=depth_contrast,
         download_dir=download_dir,
-        dprint=dprint
     )

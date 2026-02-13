@@ -1,20 +1,34 @@
 """Skeleton/keypoint drawing, pose interpolation, and debug video for poses."""
 
-import traceback
 from pathlib import Path
 
 import cv2
 import mediapipe as mp
 import numpy as np
 
-from source.core.log import headless_logger
-from source.utils.prompt_utils import dprint, DEBUG_MODE
+from source.core.log import headless_logger, is_debug_enabled
 from source.utils.frame_utils import (
     _image_to_frame_simple,
     create_color_frame,
-    create_video_from_frames_list,
-)
+    create_video_from_frames_list)
 
+__all__ = [
+    "body_colors",
+    "face_color",
+    "hand_keypoint_color",
+    "hand_limb_colors",
+    "body_skeleton",
+    "face_skeleton",
+    "hand_skeleton",
+    "draw_keypoints_and_skeleton",
+    "gen_skeleton_with_face_hands",
+    "transform_all_keypoints",
+    "extract_pose_keypoints",
+    "create_pose_interpolated_guide_video",
+    "get_resized_frame",
+    "draw_multiline_text",
+    "generate_debug_summary_video",
+]
 
 # --- Pose color and skeleton constants ---
 body_colors = [
@@ -56,7 +70,6 @@ hand_skeleton = [
     (0, 17), (17, 18), (18, 19), (19, 20)  # Pinky finger
 ]
 
-
 def draw_keypoints_and_skeleton(image, keypoints_data, skeleton_connections, colors_config, confidence_threshold=0.1, point_radius=3, line_thickness=2, is_face=False, is_hand=False):
     if not keypoints_data:
         return
@@ -66,7 +79,7 @@ def draw_keypoints_and_skeleton(image, keypoints_data, skeleton_connections, col
         for i in range(0, len(keypoints_data), 3):
             tri_tuples.append(keypoints_data[i:i+3])
     else:
-        dprint(f"draw_keypoints_and_skeleton: Unexpected keypoints_data format or length not divisible by 3. Data: {keypoints_data}")
+        headless_logger.debug(f"draw_keypoints_and_skeleton: Unexpected keypoints_data format or length not divisible by 3. Data: {keypoints_data}")
         return
 
     if skeleton_connections:
@@ -102,7 +115,6 @@ def draw_keypoints_and_skeleton(image, keypoints_data, skeleton_connections, col
             if point_color is not None:
                 cv2.circle(image, (int(x), int(y)), current_radius, point_color, -1)
 
-
 def gen_skeleton_with_face_hands(pose_keypoints_2d, face_keypoints_2d, hand_left_keypoints_2d, hand_right_keypoints_2d,
                                  canvas_width, canvas_height, landmarkType, confidence_threshold=0.1):
     image = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
@@ -111,7 +123,7 @@ def gen_skeleton_with_face_hands(pose_keypoints_2d, face_keypoints_2d, hand_left
         if not keypoints: return []
         scaled = []
         if not isinstance(keypoints, list) or (keypoints and not isinstance(keypoints[0], (int, float))):
-            dprint(f"scale_keypoints: Unexpected keypoints format: {type(keypoints)}. Expecting flat list of numbers.")
+            headless_logger.debug(f"scale_keypoints: Unexpected keypoints format: {type(keypoints)}. Expecting flat list of numbers.")
             return []
 
         for i in range(0, len(keypoints), 3):
@@ -137,7 +149,6 @@ def gen_skeleton_with_face_hands(pose_keypoints_2d, face_keypoints_2d, hand_left
         draw_keypoints_and_skeleton(image, scaled_hand_right, hand_skeleton, hand_colors_config, confidence_threshold, point_radius=3, line_thickness=2, is_hand=True)
     return image
 
-
 def transform_all_keypoints(keypoints_1_dict, keypoints_2_dict, frames, interpolation="linear"):
     def interpolate_keypoint_set(kp1_list, kp2_list, num_frames, interp_method):
         if not kp1_list and not kp2_list: return [[] for _ in range(num_frames)]
@@ -149,7 +160,7 @@ def transform_all_keypoints(keypoints_1_dict, keypoints_2_dict, frames, interpol
         if not kp2_list: kp2_list = [0.0] * len1
 
         if len(kp1_list) != len(kp2_list) or not kp1_list or len(kp1_list) % 3 != 0:
-             dprint(f"interpolate_keypoint_set: Mismatched, empty, or non-triplet keypoint lists after padding. KP1 len: {len(kp1_list)}, KP2 len: {len(kp2_list)}. Returning empty sequences.")
+             headless_logger.debug(f"interpolate_keypoint_set: Mismatched, empty, or non-triplet keypoint lists after padding. KP1 len: {len(kp1_list)}, KP2 len: {len(kp2_list)}. Returning empty sequences.")
              return [[] for _ in range(num_frames)]
 
         tri_tuples_1 = [kp1_list[i:i + 3] for i in range(0, len(kp1_list), 3)]
@@ -212,7 +223,6 @@ def transform_all_keypoints(keypoints_1_dict, keypoints_2_dict, frames, interpol
         combined_sequence.append(combined_frame_data)
     return combined_sequence
 
-
 def extract_pose_keypoints(image_path: str | Path, include_face=True, include_hands=True, resolution: tuple[int,int]=(640,480)) -> dict:
     image = cv2.imread(str(image_path))
     if image is None:
@@ -257,15 +267,14 @@ def extract_pose_keypoints(image_path: str | Path, include_face=True, include_ha
 
     return keypoints
 
-
 def create_pose_interpolated_guide_video(output_video_path: str | Path, resolution: tuple[int, int], total_frames: int,
                                            start_image_path: str | Path, end_image_path: str | Path,
                                            interpolation="linear", confidence_threshold=0.1,
                                            include_face=True, include_hands=True, fps=25):
-    dprint(f"Creating pose interpolated guide: {output_video_path} from '{Path(start_image_path).name}' to '{Path(end_image_path).name}' ({total_frames} frames). First frame will be actual start image.")
+    headless_logger.debug(f"Creating pose interpolated guide: {output_video_path} from '{Path(start_image_path).name}' to '{Path(end_image_path).name}' ({total_frames} frames). First frame will be actual start image.")
 
     if total_frames <= 0:
-        dprint(f"Video creation skipped for {output_video_path} as total_frames is {total_frames}.")
+        headless_logger.debug(f"Video creation skipped for {output_video_path} as total_frames is {total_frames}.")
         return
 
     frames_list = []
@@ -273,8 +282,7 @@ def create_pose_interpolated_guide_video(output_video_path: str | Path, resoluti
 
     first_visual_frame_np = _image_to_frame_simple(start_image_path, resolution)
     if first_visual_frame_np is None:
-        headless_logger.error(f"Error loading start image {start_image_path} for guide video frame 0. Using black frame.")
-        traceback.print_exc()
+        headless_logger.error(f"Error loading start image {start_image_path} for guide video frame 0. Using black frame.", exc_info=True)
         first_visual_frame_np = create_color_frame(resolution, (0,0,0))
     frames_list.append(first_visual_frame_np)
 
@@ -284,8 +292,7 @@ def create_pose_interpolated_guide_video(output_video_path: str | Path, resoluti
             keypoints_from = extract_pose_keypoints(start_image_path, include_face, include_hands, resolution)
             keypoints_to = extract_pose_keypoints(end_image_path, include_face, include_hands, resolution)
         except (OSError, ValueError, RuntimeError) as e_extract:
-            headless_logger.error(f"Error extracting keypoints for pose interpolation: {e_extract}. Filling remaining guide frames with black.")
-            traceback.print_exc()
+            headless_logger.error(f"Error extracting keypoints for pose interpolation: {e_extract}. Filling remaining guide frames with black.", exc_info=True)
             black_frame = create_color_frame(resolution, (0,0,0))
             for _ in range(total_frames - 1):
                 frames_list.append(black_frame)
@@ -314,11 +321,11 @@ def create_pose_interpolated_guide_video(output_video_path: str | Path, resoluti
                 )
                 frames_list.append(img)
             else:
-                dprint(f"Warning: Interpolated sequence too short at index {i} for {output_video_path}. Appending black frame.")
+                headless_logger.debug(f"Warning: Interpolated sequence too short at index {i} for {output_video_path}. Appending black frame.")
                 frames_list.append(create_color_frame(resolution, (0,0,0)))
 
     if len(frames_list) != total_frames:
-        dprint(f"Warning: Generated {len(frames_list)} frames for {output_video_path}, expected {total_frames}. Adjusting.")
+        headless_logger.debug(f"Warning: Generated {len(frames_list)} frames for {output_video_path}, expected {total_frames}. Adjusting.")
         if len(frames_list) < total_frames:
             last_frame = frames_list[-1] if frames_list else create_color_frame(resolution, (0,0,0))
             frames_list.extend([last_frame.copy() for _ in range(total_frames - len(frames_list))])
@@ -326,18 +333,17 @@ def create_pose_interpolated_guide_video(output_video_path: str | Path, resoluti
             frames_list = frames_list[:total_frames]
 
     if not frames_list:
-        dprint(f"Error: No frames for video {output_video_path}. Skipping creation.")
+        headless_logger.debug(f"Error: No frames for video {output_video_path}. Skipping creation.")
         return
 
     create_video_from_frames_list(frames_list, output_video_path, fps, resolution)
-
 
 # --- Debug Summary Video Helpers ---
 def get_resized_frame(video_path_str: str, target_size: tuple[int, int], frame_ratio: float = 0.5) -> np.ndarray | None:
     """Extracts a frame (by ratio, e.g., 0.5 for middle) from a video and resizes it."""
     video_path = Path(video_path_str)
     if not video_path.exists() or video_path.stat().st_size == 0:
-        dprint(f"GET_RESIZED_FRAME: Video not found or empty: {video_path_str}")
+        headless_logger.debug(f"GET_RESIZED_FRAME: Video not found or empty: {video_path_str}")
         placeholder = create_color_frame(target_size, (10, 10, 10)) # Dark grey
         cv2.putText(placeholder, "Not Found", (10, target_size[1] // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
         return placeholder
@@ -346,12 +352,12 @@ def get_resized_frame(video_path_str: str, target_size: tuple[int, int], frame_r
     try:
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
-            dprint(f"GET_RESIZED_FRAME: Could not open video: {video_path_str}")
+            headless_logger.debug(f"GET_RESIZED_FRAME: Could not open video: {video_path_str}")
             return create_color_frame(target_size, (20,20,20))
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if total_frames == 0:
-            dprint(f"GET_RESIZED_FRAME: Video has 0 frames: {video_path_str}")
+            headless_logger.debug(f"GET_RESIZED_FRAME: Video has 0 frames: {video_path_str}")
             return create_color_frame(target_size, (30,30,30))
 
         frame_to_get = int(total_frames * frame_ratio)
@@ -360,16 +366,15 @@ def get_resized_frame(video_path_str: str, target_size: tuple[int, int], frame_r
         cap.set(cv2.CAP_PROP_POS_FRAMES, float(frame_to_get))
         ret, frame = cap.read()
         if not ret or frame is None:
-            dprint(f"GET_RESIZED_FRAME: Could not read frame {frame_to_get} from: {video_path_str}")
+            headless_logger.debug(f"GET_RESIZED_FRAME: Could not read frame {frame_to_get} from: {video_path_str}")
             return create_color_frame(target_size, (40,40,40))
 
         return cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)
     except (OSError, ValueError, RuntimeError) as e:
-        dprint(f"GET_RESIZED_FRAME: Exception processing {video_path_str}: {e}")
+        headless_logger.debug(f"GET_RESIZED_FRAME: Exception processing {video_path_str}: {e}")
         return create_color_frame(target_size, (50,50,50)) # Error color
     finally:
         if cap: cap.release()
-
 
 def draw_multiline_text(image, text_lines, start_pos, font, font_scale, color, thickness, line_spacing):
     x, y = start_pos
@@ -378,16 +383,15 @@ def draw_multiline_text(image, text_lines, start_pos, font, font_scale, color, t
         cv2.putText(image, line, (x, line_y), font, font_scale, color, thickness, cv2.LINE_AA)
     return image
 
-
 def generate_debug_summary_video(segments_data: list[dict], output_path: str | Path, fps: int,
                                  num_frames_for_collage: int,
                                  target_thumb_size: tuple[int, int] = (320, 180)):
-    if not DEBUG_MODE: return # Only run if debug mode is on
+    if not is_debug_enabled(): return # Only run if debug mode is on
     if not segments_data:
-        dprint("GENERATE_DEBUG_SUMMARY_VIDEO: No segment data provided.")
+        headless_logger.debug("GENERATE_DEBUG_SUMMARY_VIDEO: No segment data provided.")
         return
 
-    dprint(f"Generating animated debug collage with {num_frames_for_collage} frames, at {fps} FPS.")
+    headless_logger.debug(f"Generating animated debug collage with {num_frames_for_collage} frames, at {fps} FPS.")
 
     thumb_w, thumb_h = target_thumb_size
     padding = 10
@@ -454,13 +458,13 @@ def generate_debug_summary_video(segments_data: list[dict], output_path: str | P
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         writer = cv2.VideoWriter(str(output_path), fourcc, float(fps), (canvas_w, canvas_h))
         if not writer.isOpened():
-            dprint(f"GENERATE_DEBUG_SUMMARY_VIDEO: Failed to open VideoWriter for {output_path}")
+            headless_logger.debug(f"GENERATE_DEBUG_SUMMARY_VIDEO: Failed to open VideoWriter for {output_path}")
             return
 
-        dprint(f"GENERATE_DEBUG_SUMMARY_VIDEO: Writing sequentially animated collage to {output_path}")
+        headless_logger.debug(f"GENERATE_DEBUG_SUMMARY_VIDEO: Writing sequentially animated collage to {output_path}")
 
         for active_seg_idx in range(num_segments):
-            dprint(f"Animating segment {active_seg_idx} in collage...")
+            headless_logger.debug(f"Animating segment {active_seg_idx} in collage...")
             caps_for_active_segment = {'guide': None, 'output': None, 'last_frames': {}}
             video_paths_to_load = {
                 'guide': segments_data[active_seg_idx]["guide_video_path"],
@@ -510,12 +514,12 @@ def generate_debug_summary_video(segments_data: list[dict], output_path: str | P
 
             if caps_for_active_segment['guide']: caps_for_active_segment['guide'].release()
             if caps_for_active_segment['output']: caps_for_active_segment['output'].release()
-            dprint(f"Finished animating segment {active_seg_idx} in collage.")
+            headless_logger.debug(f"Finished animating segment {active_seg_idx} in collage.")
 
-        dprint(f"GENERATE_DEBUG_SUMMARY_VIDEO: Finished writing sequentially animated debug collage.")
+        headless_logger.debug(f"GENERATE_DEBUG_SUMMARY_VIDEO: Finished writing sequentially animated debug collage.")
 
     except (OSError, ValueError, RuntimeError) as e:
-        dprint(f"GENERATE_DEBUG_SUMMARY_VIDEO: Exception during video writing: {e} - {traceback.format_exc()}")
+        headless_logger.debug(f"GENERATE_DEBUG_SUMMARY_VIDEO: Exception during video writing: {e}", exc_info=True)
     finally:
         if writer: writer.release()
-        dprint("GENERATE_DEBUG_SUMMARY_VIDEO: Video writer released.")
+        headless_logger.debug("GENERATE_DEBUG_SUMMARY_VIDEO: Video writer released.")

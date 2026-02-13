@@ -3,8 +3,14 @@
 from pathlib import Path
 
 from source.core.log import headless_logger
-from source.utils.prompt_utils import dprint
-from source.core.constants import BYTES_PER_KB as BYTES_PER_KIBIBYTE
+
+__all__ = [
+    "LORA_FULL_MODEL_TENSOR_THRESHOLD",
+    "LORA_EXCESSIVE_TENSOR_THRESHOLD",
+    "HTML_SNIFF_BYTES",
+    "validate_lora_file",
+    "check_loras_in_directory",
+]
 
 # --- LoRA validation thresholds ---
 # A safetensors file with more tensor keys than this is likely a full model checkpoint, not a LoRA.
@@ -13,7 +19,6 @@ LORA_FULL_MODEL_TENSOR_THRESHOLD = 100
 LORA_EXCESSIVE_TENSOR_THRESHOLD = 10_000
 # Number of bytes to read when sniffing a file header for HTML error pages.
 HTML_SNIFF_BYTES = 1024
-
 
 def validate_lora_file(file_path: Path, filename: str) -> tuple[bool, str]:
     """
@@ -76,7 +81,7 @@ def validate_lora_file(file_path: Path, filename: str) -> tuple[bool, str]:
                     headless_logger.warning(f"{filename} contains many tensors ({len(keys)}) - might be a full model")
 
         except ImportError:
-            dprint(f"[WARNING] safetensors not available for detailed validation of {filename}")
+            headless_logger.debug(f"[WARNING] safetensors not available for detailed validation of {filename}")
         except (OSError, ValueError, RuntimeError) as e:
             return False, f"Safetensors file appears corrupted: {e}"
 
@@ -94,7 +99,6 @@ def validate_lora_file(file_path: Path, filename: str) -> tuple[bool, str]:
         headless_logger.warning(f"Could not read first bytes of {filename} for HTML check: {e}")
 
     return True, f"File validated successfully ({file_size:,} bytes)"
-
 
 def check_loras_in_directory(lora_dir: Path | str, fix_issues: bool = False) -> dict:
     """
@@ -153,17 +157,15 @@ def check_loras_in_directory(lora_dir: Path | str, fix_issues: bool = False) -> 
 
     return results
 
-
 def _normalize_activated_loras_list(current_activated) -> list:
     """Helper to ensure activated_loras is a proper list."""
     if not isinstance(current_activated, list):
         try:
             return [str(item).strip() for item in str(current_activated).split(',') if item.strip()]
         except (ValueError, TypeError) as e:
-            dprint(f"[WARNING] Failed to normalize activated_loras value '{current_activated}': {e}")
+            headless_logger.debug(f"[WARNING] Failed to normalize activated_loras value '{current_activated}': {e}")
             return []
     return current_activated
-
 
 def _apply_special_lora_settings(task_id: str, lora_type: str, lora_basename: str, default_steps: int,
                                  guidance_scale: float, flow_shift: float, ui_defaults: dict,
@@ -174,13 +176,13 @@ def _apply_special_lora_settings(task_id: str, lora_type: str, lora_basename: st
     headless_logger.essential(f"Applying {lora_type} LoRA settings.", task_id=task_id)
 
     # [STEPS DEBUG] Add detailed debug for steps logic
-    dprint(f"[STEPS DEBUG] {lora_type}: task_params_dict keys: {list(task_params_dict.keys())}")
+    headless_logger.debug(f"[STEPS DEBUG] {lora_type}: task_params_dict keys: {list(task_params_dict.keys())}")
     if "steps" in task_params_dict:
-        dprint(f"[STEPS DEBUG] {lora_type}: Found 'steps' = {task_params_dict['steps']}")
+        headless_logger.debug(f"[STEPS DEBUG] {lora_type}: Found 'steps' = {task_params_dict['steps']}")
     if "num_inference_steps" in task_params_dict:
-        dprint(f"[STEPS DEBUG] {lora_type}: Found 'num_inference_steps' = {task_params_dict['num_inference_steps']}")
+        headless_logger.debug(f"[STEPS DEBUG] {lora_type}: Found 'num_inference_steps' = {task_params_dict['num_inference_steps']}")
     if "video_length" in task_params_dict:
-        dprint(f"[STEPS DEBUG] {lora_type}: Found 'video_length' = {task_params_dict['video_length']}")
+        headless_logger.debug(f"[STEPS DEBUG] {lora_type}: Found 'video_length' = {task_params_dict['video_length']}")
 
     # Handle steps logic
     if "steps" in task_params_dict:

@@ -1,7 +1,6 @@
 """VLM image preparation utilities."""
 
 from pathlib import Path
-from typing import Optional
 from PIL import Image, ImageDraw, ImageFont
 
 

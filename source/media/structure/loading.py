@@ -1,7 +1,13 @@
 """Structure video frame loading and resampling."""
 
 import numpy as np
-from typing import List, Tuple, Callable
+from typing import List, Tuple
+
+from source.core.log import generation_logger
+
+__all__ = [
+    "load_structure_video_frames",
+]
 
 
 def _resample_frame_indices(video_fps: float, video_frames_count: int, max_target_frames_count: int, target_fps: float, start_target_frame: int) -> List[int]:
@@ -31,7 +37,8 @@ def _resample_frame_indices(video_fps: float, video_frames_count: int, max_targe
         cur_time += add_frames_count * video_frame_duration
         target_time += target_frame_duration
 
-    frame_ids = frame_ids[:max_target_frames_count]
+    if max_target_frames_count > 0:
+        frame_ids = frame_ids[:max_target_frames_count]
     return frame_ids
 
 
@@ -42,7 +49,6 @@ def load_structure_video_frames(
     target_resolution: Tuple[int, int],
     treatment: str = "adjust",
     crop_to_fit: bool = True,
-    dprint: Callable = print
 ) -> List[np.ndarray]:
     """
     Load structure video frames with treatment mode.
@@ -54,7 +60,6 @@ def load_structure_video_frames(
         target_resolution: (width, height) tuple
         treatment: "adjust" (stretch/compress entire video) or "clip" (temporal sample)
         crop_to_fit: If True, center-crop to match target aspect ratio before resizing
-        dprint: Debug print function
 
     Returns:
         List of numpy uint8 arrays [H, W, C] in RGB format
@@ -76,10 +81,10 @@ def load_structure_video_frames(
     video_fps = round(reader.get_avg_fps())
     video_frame_count = len(reader)
 
-    dprint(f"[STRUCTURE_VIDEO] Loading frames from structure video:")
-    dprint(f"  Video: {video_frame_count} frames @ {video_fps}fps")
-    dprint(f"  Needed: {frames_to_load} frames")
-    dprint(f"  Treatment: {treatment}")
+    generation_logger.debug(f"[STRUCTURE_VIDEO] Loading frames from structure video:")
+    generation_logger.debug(f"  Video: {video_frame_count} frames @ {video_fps}fps")
+    generation_logger.debug(f"  Needed: {frames_to_load} frames")
+    generation_logger.debug(f"  Treatment: {treatment}")
 
     # Calculate frame indices based on treatment mode
     if treatment == "adjust":
@@ -89,13 +94,13 @@ def load_structure_video_frames(
             # Compress: Sample evenly across video
             frame_indices = [int(i * (video_frame_count - 1) / (frames_to_load - 1)) for i in range(frames_to_load)]
             dropped = video_frame_count - frames_to_load
-            dprint(f"  Adjust mode: Your input video has {video_frame_count} frames so we'll drop {dropped} frames to compress your guide video to the {frames_to_load} frames your input images cover.")
+            generation_logger.debug(f"  Adjust mode: Your input video has {video_frame_count} frames so we'll drop {dropped} frames to compress your guide video to the {frames_to_load} frames your input images cover.")
         else:
             # Stretch: Repeat frames to reach target count
             # Use linear interpolation indices (will repeat frames)
             frame_indices = [int(i * (video_frame_count - 1) / (frames_to_load - 1)) for i in range(frames_to_load)]
             duplicates = frames_to_load - len(set(frame_indices))
-            dprint(f"  Adjust mode: Your input video has {video_frame_count} frames so we'll duplicate {duplicates} frames to stretch your guide video to the {frames_to_load} frames your input images cover.")
+            generation_logger.debug(f"  Adjust mode: Your input video has {video_frame_count} frames so we'll duplicate {duplicates} frames to stretch your guide video to the {frames_to_load} frames your input images cover.")
     else:
         # CLIP MODE: Temporal sampling based on FPS
         frame_indices = _resample_frame_indices(
@@ -108,15 +113,15 @@ def load_structure_video_frames(
 
         # If video is too short, loop back to start
         if len(frame_indices) < frames_to_load:
-            dprint(f"  Clip mode: Video too short ({len(frame_indices)} frames < {frames_to_load} needed), looping back to start to fill remaining frames")
+            generation_logger.debug(f"  Clip mode: Video too short ({len(frame_indices)} frames < {frames_to_load} needed), looping back to start to fill remaining frames")
             while len(frame_indices) < frames_to_load:
                 remaining = frames_to_load - len(frame_indices)
                 frame_indices.extend(frame_indices[:remaining])
         elif video_frame_count > frames_to_load:
             ignored = video_frame_count - frames_to_load
-            dprint(f"  Clip mode: Your video will guide {frames_to_load} frames of your timeline. The last {ignored} frames of your video (frames {frames_to_load + 1}-{video_frame_count}) will be ignored.")
+            generation_logger.debug(f"  Clip mode: Your video will guide {frames_to_load} frames of your timeline. The last {ignored} frames of your video (frames {frames_to_load + 1}-{video_frame_count}) will be ignored.")
 
-        dprint(f"  Clip mode: Temporal sampling extracted {len(frame_indices)} frames")
+        generation_logger.debug(f"  Clip mode: Temporal sampling extracted {len(frame_indices)} frames")
 
     if not frame_indices:
         raise ValueError(f"No frames could be extracted from structure video: {structure_video_path}")
@@ -124,7 +129,7 @@ def load_structure_video_frames(
     # Extract frames using decord
     frames = reader.get_batch(frame_indices)  # Returns torch tensors [T, H, W, C]
 
-    dprint(f"[STRUCTURE_VIDEO] Loaded {len(frames)} frames")
+    generation_logger.debug(f"[STRUCTURE_VIDEO] Loaded {len(frames)} frames")
 
     # Process frames to target resolution (WGP pattern from line 3826-3830)
     w, h = target_resolution
@@ -163,7 +168,7 @@ def load_structure_video_frames(
                     frame_pil = frame_pil.crop((0, top, src_w, top + new_h))
 
                 if i == 0:
-                    dprint(f"[STRUCTURE_VIDEO] Center-cropped from {src_w}x{src_h} to {frame_pil.size[0]}x{frame_pil.size[1]}")
+                    generation_logger.debug(f"[STRUCTURE_VIDEO] Center-cropped from {src_w}x{src_h} to {frame_pil.size[0]}x{frame_pil.size[1]}")
 
         # Resize to target resolution
         frame_resized = frame_pil.resize((w, h), resample=Image.Resampling.LANCZOS)
@@ -171,6 +176,6 @@ def load_structure_video_frames(
 
         processed_frames.append(frame_resized_np)
 
-    dprint(f"[STRUCTURE_VIDEO] Preprocessed {len(processed_frames)} frames to {w}x{h}")
+    generation_logger.debug(f"[STRUCTURE_VIDEO] Preprocessed {len(processed_frames)} frames to {w}x{h}")
 
     return processed_frames

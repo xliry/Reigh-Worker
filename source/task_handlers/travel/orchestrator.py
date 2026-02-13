@@ -1,6 +1,5 @@
 """Travel orchestrator task handler - creates and manages segment tasks."""
 
-import traceback
 from pathlib import Path
 import uuid
 from datetime import datetime
@@ -14,9 +13,9 @@ from ...utils import (
     parse_resolution,
     snap_resolution_to_model_grid,
     upload_and_get_final_output_location,
-    get_video_frame_count_and_fps,
-)
+    get_video_frame_count_and_fps)
 from ...core.params.structure_guidance import StructureGuidanceConfig
+from ...core.params.task_result import TaskResult
 
 from .svi_config import SVI_DEFAULT_PARAMS, SVI_STITCH_OVERLAP
 from .debug_utils import log_ram_usage
@@ -26,50 +25,36 @@ DEFAULT_SEED_BASE = 12345
 # Offset added to the base seed to derive a deterministic but distinct seed for upscaling
 UPSCALE_SEED_OFFSET = 5000
 
-def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_base: Path, orchestrator_task_id_str: str, orchestrator_project_id: str | None, *, dprint):
+def handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_base: Path, orchestrator_task_id_str: str, orchestrator_project_id: str | None):
     travel_logger.essential("Starting travel orchestrator task", task_id=orchestrator_task_id_str)
     log_ram_usage("Orchestrator start", task_id=orchestrator_task_id_str)
     travel_logger.debug(f"Project ID: {orchestrator_project_id}", task_id=orchestrator_task_id_str)
     # Safe logging: Use safe_json_repr to prevent hangs on large nested structures
     travel_logger.debug(f"Task params: {safe_json_repr(task_params_from_db)}", task_id=orchestrator_task_id_str)
-    generation_success = False # Represents success of orchestration step
-    output_message_for_orchestrator_db = f"Orchestration for {orchestrator_task_id_str} initiated."
 
     try:
         if 'orchestrator_details' not in task_params_from_db:
             travel_logger.error("'orchestrator_details' not found in task_params_from_db", task_id=orchestrator_task_id_str)
-            return False, "orchestrator_details missing"
+            return TaskResult.failed("orchestrator_details missing")
         
         orchestrator_payload = task_params_from_db['orchestrator_details']
         # Safe logging: Use safe_dict_repr for better performance than JSON serialization
         travel_logger.debug(f"Orchestrator payload: {safe_dict_repr(orchestrator_payload)}", task_id=orchestrator_task_id_str)
 
-        # Normalize chain_segments with backwards compatibility for independent_segments
-        # chain_segments (new): true = chain segments together (default), false = keep separate
-        # independent_segments (old): false = chain together (default), true = keep separate
-        # Logic is inverted: independent_segments=false → chain_segments=true
-        if "chain_segments" not in orchestrator_payload:
-            if "independent_segments" in orchestrator_payload:
-                # Convert old parameter to new parameter (inverted logic)
-                old_value = bool(orchestrator_payload.get("independent_segments", False))
-                orchestrator_payload["chain_segments"] = not old_value
-                dprint(f"[BACKWARDS_COMPAT] Converted independent_segments={old_value} to chain_segments={not old_value}")
-            else:
-                # Neither provided - use default
-                orchestrator_payload["chain_segments"] = True  # Default: chain segments together
-                dprint(f"[DEFAULT] Set chain_segments=True (default behavior)")
-        else:
-            # chain_segments explicitly provided - use it
-            orchestrator_payload["chain_segments"] = bool(orchestrator_payload["chain_segments"])
-            dprint(f"[EXPLICIT] Using provided chain_segments={orchestrator_payload['chain_segments']}")
+        # Validate required keys are present before proceeding
+        from source.core.params.contracts import validate_orchestrator_details
+        validate_orchestrator_details(orchestrator_payload, context="travel_orchestrator", task_id=orchestrator_task_id_str)
+
+        # Normalize chain_segments: true = chain segments together (default), false = keep separate
+        chain_segments_raw = orchestrator_payload.get("chain_segments", True)
+        orchestrator_payload["chain_segments"] = bool(chain_segments_raw)
 
         # Parse phase_config if present and add parsed values to orchestrator_payload
         if "phase_config" in orchestrator_payload:
             travel_logger.info(f"phase_config detected in orchestrator - parsing comprehensive phase configuration", task_id=orchestrator_task_id_str)
 
             try:
-                # Import parse_phase_config
-                from source.task_handlers.tasks.task_conversion import parse_phase_config
+                from source.core.params.phase_config_parser import parse_phase_config
 
                 # Get total steps from phase_config
                 phase_config = orchestrator_payload["phase_config"]
@@ -92,7 +77,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                            "lora_names", "lora_multipliers"]:
                     if key in parsed and parsed[key] is not None:
                         orchestrator_payload[key] = parsed[key]
-                        dprint(f"[ORCHESTRATOR_PHASE_CONFIG] Added {key} to orchestrator_payload: {parsed[key]}")
+                        travel_logger.debug(f"[ORCHESTRATOR_PHASE_CONFIG] Added {key} to orchestrator_payload: {parsed[key]}")
 
                 # Also update num_inference_steps
                 orchestrator_payload["num_inference_steps"] = total_steps
@@ -106,12 +91,11 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 )
 
             except (ValueError, KeyError, TypeError) as e:
-                travel_logger.error(f"Failed to parse phase_config: {e}", task_id=orchestrator_task_id_str)
-                traceback.print_exc()
-                return False, f"Failed to parse phase_config: {e}"
+                travel_logger.error(f"Failed to parse phase_config: {e}", task_id=orchestrator_task_id_str, exc_info=True)
+                return TaskResult.failed(f"Failed to parse phase_config: {e}")
 
         # IDEMPOTENCY CHECK: Look for existing child tasks before creating new ones
-        dprint(f"[IDEMPOTENCY] Checking for existing child tasks for orchestrator {orchestrator_task_id_str}")
+        travel_logger.debug(f"[IDEMPOTENCY] Checking for existing child tasks for orchestrator {orchestrator_task_id_str}")
         existing_child_tasks = db_ops.get_orchestrator_child_tasks(orchestrator_task_id_str)
         existing_segments = existing_child_tasks['segments']
         existing_stitch = existing_child_tasks['stitch']
@@ -134,7 +118,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         required_join_orchestrator_count = 1 if stitch_config_present else 0
 
         if existing_segments or existing_stitch or existing_join_orchestrators:
-            dprint(f"[IDEMPOTENCY] Found existing child tasks: {len(existing_segments)} segments, {len(existing_stitch)} stitch tasks, {len(existing_join_orchestrators)} join orchestrators")
+            travel_logger.debug(f"[IDEMPOTENCY] Found existing child tasks: {len(existing_segments)} segments, {len(existing_stitch)} stitch tasks, {len(existing_join_orchestrators)} join orchestrators")
 
             # Check if we have the expected number of tasks already
             has_required_join_orchestrator = len(existing_join_orchestrators) >= required_join_orchestrator_count
@@ -184,7 +168,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     if failed_join_orchestrators:
                         error_details.append(f"{len(failed_join_orchestrators)} join orchestrator(s) failed/cancelled")
 
-                    dprint(f"[IDEMPOTENT_FAILED] Child tasks failed: {', '.join(error_details)}")
+                    travel_logger.debug(f"[IDEMPOTENT_FAILED] Child tasks failed: {', '.join(error_details)}")
                     travel_logger.error(f"Child tasks in terminal failure state: {', '.join(error_details)}", task_id=orchestrator_task_id_str)
 
                     # Return failure so orchestrator is marked as failed
@@ -194,7 +178,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
 
                 if all_segments_complete and all_stitch_complete and all_join_orchestrators_complete and has_required_segments and has_required_stitch and has_required_join_orchestrator:
                     # All children are done! Return with special "COMPLETE" marker
-                    dprint(f"[IDEMPOTENT_COMPLETE] All {len(existing_segments)} segments, {len(existing_stitch)} stitch, {len(existing_join_orchestrators)} join orchestrators complete")
+                    travel_logger.debug(f"[IDEMPOTENT_COMPLETE] All {len(existing_segments)} segments, {len(existing_stitch)} stitch, {len(existing_join_orchestrators)} join orchestrators complete")
                     travel_logger.info(f"All child tasks complete, orchestrator should be marked as complete", task_id=orchestrator_task_id_str)
 
                     # Get the final output:
@@ -237,10 +221,10 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     return generation_success, output_message_for_orchestrator_db
             else:
                 # Partial completion - log and continue with missing tasks
-                dprint(f"[IDEMPOTENCY] Partial child tasks found: {len(existing_segments)}/{expected_segments} segments, {len(existing_stitch)}/{required_stitch_count} stitch. Will continue with orchestration.")
+                travel_logger.debug(f"[IDEMPOTENCY] Partial child tasks found: {len(existing_segments)}/{expected_segments} segments, {len(existing_stitch)}/{required_stitch_count} stitch. Will continue with orchestration.")
                 travel_logger.warning(f"Partial child tasks found, continuing orchestration to create missing tasks", task_id=orchestrator_task_id_str)
         else:
-            dprint(f"[IDEMPOTENCY] No existing child tasks found. Proceeding with normal orchestration.")
+            travel_logger.debug(f"[IDEMPOTENCY] No existing child tasks found. Proceeding with normal orchestration.")
 
         run_id = orchestrator_payload.get("run_id", orchestrator_task_id_str)
         base_dir_for_this_run_str = orchestrator_payload.get("main_output_dir_for_run", str(main_output_dir_base.resolve()))
@@ -256,13 +240,13 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             current_run_output_dir = base_dir_path.resolve()
 
         current_run_output_dir.mkdir(parents=True, exist_ok=True)
-        dprint(f"Orchestrator {orchestrator_task_id_str}: Base output directory for this run: {current_run_output_dir}")
+        travel_logger.debug(f"Orchestrator {orchestrator_task_id_str}: Base output directory for this run: {current_run_output_dir}")
 
         num_segments = orchestrator_payload.get("num_new_segments_to_generate", 0)
         if num_segments <= 0:
             msg = f"No new segments to generate based on orchestrator payload. Orchestration complete (vacuously)."
             travel_logger.warning(msg, task_id=orchestrator_task_id_str)
-            return True, msg
+            return TaskResult.orchestrating(msg)
 
         # Track actual DB row IDs by segment index to avoid mixing logical IDs
         actual_segment_db_id_by_index: dict[int, str] = {}
@@ -284,8 +268,8 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         stitch_already_exists = len(existing_stitch) > 0
         existing_stitch_task_id = existing_stitch[0]['id'] if stitch_already_exists else None
         
-        dprint(f"[IDEMPOTENCY] Existing segment indices: {sorted(existing_segment_indices)}")
-        dprint(f"[IDEMPOTENCY] Stitch task exists: {stitch_already_exists} (ID: {existing_stitch_task_id})")
+        travel_logger.debug(f"[IDEMPOTENCY] Existing segment indices: {sorted(existing_segment_indices)}")
+        travel_logger.debug(f"[IDEMPOTENCY] Stitch task exists: {stitch_already_exists} (ID: {existing_stitch_task_id})")
 
         # Image download directory is not needed for Supabase - images are already uploaded
         segment_image_download_dir_str : str | None = None
@@ -302,15 +286,15 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         loras_per_segment_expanded = orchestrator_payload.get("loras_per_segment_expanded", [])
 
         # Log per-segment override summary
-        dprint(f"[PER_SEGMENT_OVERRIDES] ========== Per-Segment Parameter Overrides ==========")
-        dprint(f"[PER_SEGMENT_OVERRIDES] phase_configs_expanded: {len(phase_configs_expanded)} entries received")
-        dprint(f"[PER_SEGMENT_OVERRIDES] loras_per_segment_expanded: {len(loras_per_segment_expanded)} entries received")
+        travel_logger.debug(f"[PER_SEGMENT_OVERRIDES] ========== Per-Segment Parameter Overrides ==========")
+        travel_logger.debug(f"[PER_SEGMENT_OVERRIDES] phase_configs_expanded: {len(phase_configs_expanded)} entries received")
+        travel_logger.debug(f"[PER_SEGMENT_OVERRIDES] loras_per_segment_expanded: {len(loras_per_segment_expanded)} entries received")
 
         # Count non-null overrides
         phase_config_overrides = sum(1 for pc in phase_configs_expanded if pc is not None)
         lora_overrides = sum(1 for l in loras_per_segment_expanded if l is not None)
-        dprint(f"[PER_SEGMENT_OVERRIDES] Segments with phase_config override: {phase_config_overrides}/{num_segments}")
-        dprint(f"[PER_SEGMENT_OVERRIDES] Segments with LoRA override: {lora_overrides}/{num_segments}")
+        travel_logger.debug(f"[PER_SEGMENT_OVERRIDES] Segments with phase_config override: {phase_config_overrides}/{num_segments}")
+        travel_logger.debug(f"[PER_SEGMENT_OVERRIDES] Segments with LoRA override: {lora_overrides}/{num_segments}")
 
         # Log per-segment detail
         for idx in range(num_segments):
@@ -329,8 +313,8 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 lora_names = [l.get("name", l.get("path", "?")[:20]) for l in loras_per_segment_expanded[idx][:3]]
                 lora_info = f"CUSTOM ({lora_count} LoRAs: {lora_names})"
 
-            dprint(f"[PER_SEGMENT_OVERRIDES]   Segment {idx}: phase_config={pc_info}, loras={lora_info}")
-        dprint(f"[PER_SEGMENT_OVERRIDES] =====================================================")
+            travel_logger.debug(f"[PER_SEGMENT_OVERRIDES]   Segment {idx}: phase_config={pc_info}, loras={lora_info}")
+        travel_logger.debug(f"[PER_SEGMENT_OVERRIDES] =====================================================")
 
         # Normalize single int frame_overlap to array
         if isinstance(expanded_frame_overlap, int):
@@ -338,23 +322,23 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             # For N segments, we need N-1 overlap values (one for each transition)
             expanded_frame_overlap = [single_overlap_value] * max(0, num_segments - 1)
             orchestrator_payload["frame_overlap_expanded"] = expanded_frame_overlap
-            dprint(f"[NORMALIZE] Expanded single frame_overlap int {single_overlap_value} to array of {len(expanded_frame_overlap)} elements: {expanded_frame_overlap}")
+            travel_logger.debug(f"[NORMALIZE] Expanded single frame_overlap int {single_overlap_value} to array of {len(expanded_frame_overlap)} elements: {expanded_frame_overlap}")
 
         # [PAYLOAD_ORDER_DEBUG] Log the alignment of images and prompts from payload
         input_images_from_payload = orchestrator_payload.get("input_image_paths_resolved", [])
-        dprint(f"[PAYLOAD_ORDER_DEBUG] Orchestrator received: {len(input_images_from_payload)} images, {len(expanded_base_prompts)} prompts, {num_segments} segments")
-        dprint(f"[PAYLOAD_ORDER_DEBUG] Image → Prompt alignment check:")
+        travel_logger.debug(f"[PAYLOAD_ORDER_DEBUG] Orchestrator received: {len(input_images_from_payload)} images, {len(expanded_base_prompts)} prompts, {num_segments} segments")
+        travel_logger.debug(f"[PAYLOAD_ORDER_DEBUG] Image → Prompt alignment check:")
         for i in range(max(len(input_images_from_payload), len(expanded_base_prompts))):
             img_name = Path(input_images_from_payload[i]).name if i < len(input_images_from_payload) else "NO_IMAGE"
             prompt_preview = expanded_base_prompts[i][:60] if i < len(expanded_base_prompts) and expanded_base_prompts[i] else "NO_PROMPT"
             transition_note = f"(seg {i}: img[{i}]→img[{i+1}])" if i < num_segments else "(no segment)"
-            dprint(f"[PAYLOAD_ORDER_DEBUG]   [{i}] {img_name} | '{prompt_preview}...' {transition_note}")
+            travel_logger.debug(f"[PAYLOAD_ORDER_DEBUG]   [{i}] {img_name} | '{prompt_preview}...' {transition_note}")
 
         # Preserve a copy of the original overlap list in case we need it later
         _orig_frame_overlap = list(expanded_frame_overlap)  # shallow copy
 
         # --- IDENTICAL PARAMETER DETECTION AND FRAME CONSOLIDATION ---
-        def detect_identical_parameters(orchestrator_payload, num_segments, dprint=None):
+        def detect_identical_parameters(orchestrator_payload, num_segments):
             """
             Detect if all segments will have identical generation parameters.
             Returns analysis that enables both model caching and frame optimization.
@@ -370,10 +354,10 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
 
             is_identical = prompts_identical and negative_prompts_identical
 
-            if dprint and is_identical:
-                dprint(f"[IDENTICAL_DETECTION] All {num_segments} segments identical - enabling optimizations")
-                dprint(f"  - Unique prompt: '{expanded_base_prompts[0][:50]}...'")
-                dprint(f"  - LoRA count: {len(lora_names)}")
+            if is_identical:
+                travel_logger.debug(f"[IDENTICAL_DETECTION] All {num_segments} segments identical - enabling optimizations")
+                travel_logger.debug(f"  - Unique prompt: '{expanded_base_prompts[0][:50]}...'")
+                travel_logger.debug(f"  - LoRA count: {len(lora_names)}")
 
             return {
                 "is_identical": is_identical,
@@ -382,7 +366,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 "unique_prompt": expanded_base_prompts[0] if prompts_identical else None
             }
 
-        def validate_consolidation_safety(orchestrator_payload, dprint=None):
+        def validate_consolidation_safety(orchestrator_payload):
             """
             Verify that frame consolidation is safe by checking parameter identity.
             """
@@ -397,15 +381,14 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
 
             is_safe = all_prompts_identical and all_neg_prompts_identical
 
-            if dprint:
-                if is_safe:
-                    dprint(f"[CONSOLIDATION_SAFETY] ✅ Safe to consolidate - all parameters identical")
-                else:
-                    dprint(f"[CONSOLIDATION_SAFETY] ❌ NOT safe to consolidate:")
-                    if not all_prompts_identical:
-                        dprint(f"  - Prompts differ: {len(set(prompts))} unique prompts")
-                    if not all_neg_prompts_identical:
-                        dprint(f"  - Negative prompts differ: {len(set(neg_prompts))} unique")
+            if is_safe:
+                travel_logger.debug(f"[CONSOLIDATION_SAFETY] ✅ Safe to consolidate - all parameters identical")
+            else:
+                travel_logger.debug(f"[CONSOLIDATION_SAFETY] ❌ NOT safe to consolidate:")
+                if not all_prompts_identical:
+                    travel_logger.debug(f"  - Prompts differ: {len(set(prompts))} unique prompts")
+                if not all_neg_prompts_identical:
+                    travel_logger.debug(f"  - Negative prompts differ: {len(set(neg_prompts))} unique")
 
             return {
                 "is_safe": is_safe,
@@ -414,14 +397,13 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 "can_consolidate": is_safe
             }
 
-        def optimize_frame_allocation_for_identical_params(orchestrator_payload, max_frames_per_segment=65, dprint=None):
+        def optimize_frame_allocation_for_identical_params(orchestrator_payload, max_frames_per_segment=65):
             """
             When all parameters are identical, consolidate keyframes into fewer segments.
 
             Args:
                 orchestrator_payload: Original orchestrator data
                 max_frames_per_segment: Maximum frames per segment (model technical limit)
-                dprint: Debug logging function
 
             Returns:
                 Updated orchestrator_payload with optimized frame allocation
@@ -430,10 +412,9 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             original_frame_overlaps = orchestrator_payload["frame_overlap_expanded"]
             original_base_prompts = orchestrator_payload["base_prompts_expanded"]
 
-            if dprint:
-                dprint(f"[FRAME_CONSOLIDATION] Original allocation: {len(original_segment_frames)} segments")
-                dprint(f"  - Segment frames: {original_segment_frames}")
-                dprint(f"  - Frame overlaps: {original_frame_overlaps}")
+            travel_logger.debug(f"[FRAME_CONSOLIDATION] Original allocation: {len(original_segment_frames)} segments")
+            travel_logger.debug(f"  - Segment frames: {original_segment_frames}")
+            travel_logger.debug(f"  - Frame overlaps: {original_frame_overlaps}")
 
             # Calculate keyframe positions based on raw segment durations (no overlaps for consolidated videos)
             keyframe_positions = [0]  # Start with frame 0
@@ -443,8 +424,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 cumulative_pos += segment_frames
                 keyframe_positions.append(cumulative_pos)
 
-            if dprint:
-                dprint(f"[FRAME_CONSOLIDATION] Keyframe positions: {keyframe_positions}")
+            travel_logger.debug(f"[FRAME_CONSOLIDATION] Keyframe positions: {keyframe_positions}")
 
             # Simple consolidation: group keyframes into videos respecting frame limit
             optimized_segments = []
@@ -461,8 +441,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 if video_length_if_included <= max_frames_per_segment:
                     # Keyframe fits in current video
                     video_keyframes.append(kf_pos)
-                    if dprint:
-                        dprint(f"[CONSOLIDATION_LOGIC] Keyframe {kf_pos} fits in current video (length would be {video_length_if_included})")
+                    travel_logger.debug(f"[CONSOLIDATION_LOGIC] Keyframe {kf_pos} fits in current video (length would be {video_length_if_included})")
                 else:
                     # Current video is full, finalize it and start new one
                     final_frame = video_keyframes[-1]
@@ -471,9 +450,8 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     optimized_segments.append(quantized_length)
                     optimized_prompts.append(original_base_prompts[0])
 
-                    if dprint:
-                        dprint(f"[CONSOLIDATION_LOGIC] Video complete: frames {video_start}-{final_frame} (raw: {raw_length}, quantized: {quantized_length})")
-                        dprint(f"[CONSOLIDATION_LOGIC] Video keyframes: {[kf - video_start for kf in video_keyframes]}")
+                    travel_logger.debug(f"[CONSOLIDATION_LOGIC] Video complete: frames {video_start}-{final_frame} (raw: {raw_length}, quantized: {quantized_length})")
+                    travel_logger.debug(f"[CONSOLIDATION_LOGIC] Video keyframes: {[kf - video_start for kf in video_keyframes]}")
 
                     # Add overlap for the next video if there are more keyframes to process
                     # When we finalize a video because the next keyframe doesn't fit,
@@ -488,14 +466,12 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                             overlap = 4  # Default fallback if no overlap specified
 
                         optimized_overlaps.append(overlap)
-                        if dprint:
-                            dprint(f"[CONSOLIDATION_LOGIC] Added overlap {overlap} frames for next video (from original settings)")
+                        travel_logger.debug(f"[CONSOLIDATION_LOGIC] Added overlap {overlap} frames for next video (from original settings)")
 
                     # Start new video
                     video_start = video_keyframes[-1]  # Start from last keyframe of previous video
                     video_keyframes = [video_start, kf_pos]
-                    if dprint:
-                        dprint(f"[CONSOLIDATION_LOGIC] Starting new video at frame {video_start}")
+                    travel_logger.debug(f"[CONSOLIDATION_LOGIC] Starting new video at frame {video_start}")
 
             # Finalize the last video
             final_frame = video_keyframes[-1]
@@ -504,9 +480,8 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             optimized_segments.append(quantized_length)
             optimized_prompts.append(original_base_prompts[0])
 
-            if dprint:
-                dprint(f"[CONSOLIDATION_LOGIC] Final video: frames {video_start}-{final_frame} (raw: {raw_length}, quantized: {quantized_length})")
-                dprint(f"[CONSOLIDATION_LOGIC] Final video keyframes: {[kf - video_start for kf in video_keyframes]}")
+            travel_logger.debug(f"[CONSOLIDATION_LOGIC] Final video: frames {video_start}-{final_frame} (raw: {raw_length}, quantized: {quantized_length})")
+            travel_logger.debug(f"[CONSOLIDATION_LOGIC] Final video keyframes: {[kf - video_start for kf in video_keyframes]}")
 
             # SANITY CHECK: Consolidation should NEVER increase segment count
             original_num_segments = len(original_segment_frames)
@@ -514,9 +489,8 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
 
             if new_num_segments > original_num_segments:
                 # This should never happen - consolidation split segments instead of combining them!
-                if dprint:
-                    dprint(f"[CONSOLIDATION_ERROR] ❌ Consolidation increased segments from {original_num_segments} to {new_num_segments} - ABORTING optimization")
-                dprint(f"[FRAME_CONSOLIDATION] ❌ ERROR: Consolidation would increase segments ({original_num_segments} → {new_num_segments}) - keeping original allocation")
+                travel_logger.debug(f"[CONSOLIDATION_ERROR] ❌ Consolidation increased segments from {original_num_segments} to {new_num_segments} - ABORTING optimization")
+                travel_logger.debug(f"[FRAME_CONSOLIDATION] ❌ ERROR: Consolidation would increase segments ({original_num_segments} → {new_num_segments}) - keeping original allocation")
                 # Return early without modifying the payload
                 return orchestrator_payload
 
@@ -533,8 +507,8 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             # Set to empty strings to trigger VLM regeneration for the new consolidated transitions.
             original_enhanced_prompts = orchestrator_payload.get("enhanced_prompts_expanded", [])
             if original_enhanced_prompts and len(original_enhanced_prompts) != len(optimized_segments):
-                dprint(f"[FRAME_CONSOLIDATION] Remapping enhanced_prompts_expanded from {len(original_enhanced_prompts)} to {len(optimized_segments)} segments")
-                dprint(f"[FRAME_CONSOLIDATION] Setting enhanced_prompts to empty (consolidated transitions differ from originals, will regenerate via VLM)")
+                travel_logger.debug(f"[FRAME_CONSOLIDATION] Remapping enhanced_prompts_expanded from {len(original_enhanced_prompts)} to {len(optimized_segments)} segments")
+                travel_logger.debug(f"[FRAME_CONSOLIDATION] Setting enhanced_prompts to empty (consolidated transitions differ from originals, will regenerate via VLM)")
                 orchestrator_payload["enhanced_prompts_expanded"] = [""] * len(optimized_segments)
 
             # CRITICAL: Store end anchor image indices for consolidated segments
@@ -566,7 +540,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     else:
                         # Finalize current video - end with current_image_idx
                         consolidated_end_anchors.append(current_image_idx)
-                        dprint(f"[FRAME_CONSOLIDATION] Segment {len(consolidated_end_anchors)-1}: end_anchor_image_index = {current_image_idx}")
+                        travel_logger.debug(f"[FRAME_CONSOLIDATION] Segment {len(consolidated_end_anchors)-1}: end_anchor_image_index = {current_image_idx}")
 
                         # Start new video
                         video_start = video_keyframes[-1]
@@ -575,7 +549,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
 
                 # Handle the final segment
                 consolidated_end_anchors.append(current_image_idx)
-                dprint(f"[FRAME_CONSOLIDATION] Segment {len(consolidated_end_anchors)-1}: end_anchor_image_index = {current_image_idx}")
+                travel_logger.debug(f"[FRAME_CONSOLIDATION] Segment {len(consolidated_end_anchors)-1}: end_anchor_image_index = {current_image_idx}")
 
             # Store the end anchor mapping for use during segment creation
             orchestrator_payload["_consolidated_end_anchors"] = consolidated_end_anchors
@@ -618,10 +592,9 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     consolidated_keyframe_segments.append(relative_keyframes)
                     consolidated_keyframe_image_indices.append(video_image_indices.copy())
 
-                    if dprint:
-                        dprint(f"[KEYFRAME_ASSIGNMENT] Video {current_video_idx}: absolute start {video_start}, final frame {final_frame}")
-                        dprint(f"[KEYFRAME_ASSIGNMENT] Video {current_video_idx} keyframes: {video_keyframes} → relative: {relative_keyframes}")
-                        dprint(f"[KEYFRAME_ASSIGNMENT] Video {current_video_idx} image indices: {video_image_indices}")
+                    travel_logger.debug(f"[KEYFRAME_ASSIGNMENT] Video {current_video_idx}: absolute start {video_start}, final frame {final_frame}")
+                    travel_logger.debug(f"[KEYFRAME_ASSIGNMENT] Video {current_video_idx} keyframes: {video_keyframes} → relative: {relative_keyframes}")
+                    travel_logger.debug(f"[KEYFRAME_ASSIGNMENT] Video {current_video_idx} image indices: {video_image_indices}")
 
                     # Start new video
                     current_video_idx += 1
@@ -650,22 +623,19 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 consolidated_keyframe_segments.append(relative_keyframes)
                 consolidated_keyframe_image_indices.append(video_image_indices.copy())
 
-                if dprint:
-                    dprint(f"[KEYFRAME_ASSIGNMENT] Video {current_video_idx}: absolute start {video_start}")
-                    dprint(f"[KEYFRAME_ASSIGNMENT] Video {current_video_idx} keyframes: {video_keyframes} → relative: {relative_keyframes}")
-                    dprint(f"[KEYFRAME_ASSIGNMENT] Video {current_video_idx} image indices: {video_image_indices}")
+                travel_logger.debug(f"[KEYFRAME_ASSIGNMENT] Video {current_video_idx}: absolute start {video_start}")
+                travel_logger.debug(f"[KEYFRAME_ASSIGNMENT] Video {current_video_idx} keyframes: {video_keyframes} → relative: {relative_keyframes}")
+                travel_logger.debug(f"[KEYFRAME_ASSIGNMENT] Video {current_video_idx} image indices: {video_image_indices}")
 
             # Store relative keyframe positions for guide video creation
             orchestrator_payload["_consolidated_keyframe_positions"] = consolidated_keyframe_segments
 
-            if dprint:
-                dprint(f"[FRAME_CONSOLIDATION] Optimized to {len(optimized_segments)} segments (was {len(original_segment_frames)})")
-                dprint(f"  - New segment frames: {optimized_segments}")
-                dprint(f"  - New overlaps: {optimized_overlaps}")
-                dprint(f"  - Efficiency: {(len(original_segment_frames) - len(optimized_segments))} fewer segments")
+            travel_logger.debug(f"[FRAME_CONSOLIDATION] Optimized to {len(optimized_segments)} segments (was {len(original_segment_frames)})")
+            travel_logger.debug(f"  - New segment frames: {optimized_segments}")
+            travel_logger.debug(f"  - New overlaps: {optimized_overlaps}")
+            travel_logger.debug(f"  - Efficiency: {(len(original_segment_frames) - len(optimized_segments))} fewer segments")
 
             return orchestrator_payload
-
 
         # --- SM_QUANTIZE_FRAMES_AND_OVERLAPS ---
         # Adjust all segment lengths to match model constraints (4*N+1 format).
@@ -673,27 +643,27 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         # smaller of the two segments they connect. This prevents errors downstream
         # in guide video creation, generation, and stitching.
 
-        dprint(f"[FRAME_DEBUG] Orchestrator {orchestrator_task_id_str}: QUANTIZATION ANALYSIS")
-        dprint(f"[FRAME_DEBUG] Original segment_frames_expanded: {expanded_segment_frames}")
-        dprint(f"[FRAME_DEBUG] Original frame_overlap: {expanded_frame_overlap}")
+        travel_logger.debug(f"[FRAME_DEBUG] Orchestrator {orchestrator_task_id_str}: QUANTIZATION ANALYSIS")
+        travel_logger.debug(f"[FRAME_DEBUG] Original segment_frames_expanded: {expanded_segment_frames}")
+        travel_logger.debug(f"[FRAME_DEBUG] Original frame_overlap: {expanded_frame_overlap}")
         
         quantized_segment_frames = []
-        dprint(f"Orchestrator: Quantizing frame counts. Original segment_frames_expanded: {expanded_segment_frames}")
+        travel_logger.debug(f"Orchestrator: Quantizing frame counts. Original segment_frames_expanded: {expanded_segment_frames}")
         for i, frames in enumerate(expanded_segment_frames):
             # Quantize to 4*N+1 format to match model constraints, applied later in worker.py
             new_frames = (frames // 4) * 4 + 1
-            dprint(f"[FRAME_DEBUG] Segment {i}: {frames} -> {new_frames} (4*N+1 quantization)")
+            travel_logger.debug(f"[FRAME_DEBUG] Segment {i}: {frames} -> {new_frames} (4*N+1 quantization)")
             if new_frames != frames:
-                dprint(f"Orchestrator: Quantized segment {i} length from {frames} to {new_frames} (4*N+1 format).")
+                travel_logger.debug(f"Orchestrator: Quantized segment {i} length from {frames} to {new_frames} (4*N+1 format).")
             quantized_segment_frames.append(new_frames)
         
-        dprint(f"[FRAME_DEBUG] Quantized segment_frames: {quantized_segment_frames}")
-        dprint(f"Orchestrator: Finished quantizing frame counts. New quantized_segment_frames: {quantized_segment_frames}")
+        travel_logger.debug(f"[FRAME_DEBUG] Quantized segment_frames: {quantized_segment_frames}")
+        travel_logger.debug(f"Orchestrator: Finished quantizing frame counts. New quantized_segment_frames: {quantized_segment_frames}")
         
         quantized_frame_overlap = []
         # There are N-1 overlaps for N segments. The loop must not iterate more times than this.
         num_overlaps_to_process = len(quantized_segment_frames) - 1
-        dprint(f"[FRAME_DEBUG] Processing {num_overlaps_to_process} overlap values")
+        travel_logger.debug(f"[FRAME_DEBUG] Processing {num_overlaps_to_process} overlap values")
 
         if num_overlaps_to_process > 0:
             for i in range(num_overlaps_to_process):
@@ -702,7 +672,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     original_overlap = expanded_frame_overlap[i]
                 else:
                     # This case should not happen if client is correct, but as a fallback.
-                    dprint(f"Orchestrator: Overlap at index {i} missing. Defaulting to 0.")
+                    travel_logger.debug(f"Orchestrator: Overlap at index {i} missing. Defaulting to 0.")
                     original_overlap = 0
                 
                 # Overlap connects segment i and i+1.
@@ -714,16 +684,16 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 new_overlap = min(new_overlap, max_possible_overlap)
                 if new_overlap < 0: new_overlap = 0
 
-                dprint(f"[FRAME_DEBUG] Overlap {i} (segments {i}->{i+1}): {original_overlap} -> {new_overlap}")
-                dprint(f"[FRAME_DEBUG]   Segment lengths: {quantized_segment_frames[i]}, {quantized_segment_frames[i+1]}")
-                dprint(f"[FRAME_DEBUG]   Max possible overlap: {max_possible_overlap}")
+                travel_logger.debug(f"[FRAME_DEBUG] Overlap {i} (segments {i}->{i+1}): {original_overlap} -> {new_overlap}")
+                travel_logger.debug(f"[FRAME_DEBUG]   Segment lengths: {quantized_segment_frames[i]}, {quantized_segment_frames[i+1]}")
+                travel_logger.debug(f"[FRAME_DEBUG]   Max possible overlap: {max_possible_overlap}")
                 
                 if new_overlap != original_overlap:
-                    dprint(f"Orchestrator: Adjusted overlap between segments {i}-{i+1} from {original_overlap} to {new_overlap}.")
+                    travel_logger.debug(f"Orchestrator: Adjusted overlap between segments {i}-{i+1} from {original_overlap} to {new_overlap}.")
                 
                 quantized_frame_overlap.append(new_overlap)
         
-        dprint(f"[FRAME_DEBUG] Final quantized_frame_overlap: {quantized_frame_overlap}")
+        travel_logger.debug(f"[FRAME_DEBUG] Final quantized_frame_overlap: {quantized_frame_overlap}")
         
         # Persist quantised results back to orchestrator_payload so all downstream tasks see them
         orchestrator_payload["segment_frames_expanded"] = quantized_segment_frames
@@ -733,11 +703,11 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         total_input_frames = sum(quantized_segment_frames)
         total_overlaps = sum(quantized_frame_overlap)
         expected_final_length = total_input_frames - total_overlaps
-        dprint(f"[FRAME_DEBUG] EXPECTED FINAL VIDEO:")
-        dprint(f"[FRAME_DEBUG]   Total input frames: {total_input_frames}")
-        dprint(f"[FRAME_DEBUG]   Total overlaps: {total_overlaps}")
-        dprint(f"[FRAME_DEBUG]   Expected final length: {expected_final_length} frames")
-        dprint(f"[FRAME_DEBUG]   Expected duration: {expected_final_length / orchestrator_payload.get('fps_helpers', 16):.2f}s")
+        travel_logger.debug(f"[FRAME_DEBUG] EXPECTED FINAL VIDEO:")
+        travel_logger.debug(f"[FRAME_DEBUG]   Total input frames: {total_input_frames}")
+        travel_logger.debug(f"[FRAME_DEBUG]   Total overlaps: {total_overlaps}")
+        travel_logger.debug(f"[FRAME_DEBUG]   Expected final length: {expected_final_length} frames")
+        travel_logger.debug(f"[FRAME_DEBUG]   Expected duration: {expected_final_length / orchestrator_payload.get('fps_helpers', 16):.2f}s")
         
         # Replace original lists with the new quantized ones for all subsequent logic
         expanded_segment_frames = quantized_segment_frames
@@ -768,35 +738,34 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         # # consolidation assumption that all segments have identical parameters.
         # enhance_prompt_enabled = orchestrator_payload.get("enhance_prompt", False)
         # if enhance_prompt_enabled:
-        #     dprint(f"[FRAME_CONSOLIDATION] enhance_prompt=True detected - DISABLING frame consolidation")
-        #     dprint(f"[FRAME_CONSOLIDATION] Reason: VLM will generate unique prompts per segment, breaking identity assumption")
+        #     travel_logger.debug(f"[FRAME_CONSOLIDATION] enhance_prompt=True detected - DISABLING frame consolidation")
+        #     travel_logger.debug(f"[FRAME_CONSOLIDATION] Reason: VLM will generate unique prompts per segment, breaking identity assumption")
         #     identity_analysis = {
         #         "can_optimize_frames": False,
         #         "can_reuse_model": False,
         #         "is_identical": False
         #     }
         # else:
-        #     identity_analysis = detect_identical_parameters(orchestrator_payload, num_segments, dprint)
+        #     identity_analysis = detect_identical_parameters(orchestrator_payload, num_segments)
         #
         # if identity_analysis["can_optimize_frames"]:
         #     # Only run consolidation if there are multiple segments to consolidate
         #     num_segments = len(orchestrator_payload["segment_frames_expanded"])
         #     if num_segments <= 1:
-        #         dprint(f"[FRAME_CONSOLIDATION] ⏭️  Skipping optimization - only {num_segments} segment(s), nothing to consolidate")
+        #         travel_logger.debug(f"[FRAME_CONSOLIDATION] ⏭️  Skipping optimization - only {num_segments} segment(s), nothing to consolidate")
         #         travel_logger.info(f"Frame consolidation: Only {num_segments} segment(s) - no consolidation needed", task_id=orchestrator_task_id_str)
         #     else:
         #         # Run safety validation before optimization
-        #         safety_check = validate_consolidation_safety(orchestrator_payload, dprint)
+        #         safety_check = validate_consolidation_safety(orchestrator_payload)
         #
         #         if safety_check["is_safe"]:
-        #             dprint(f"[FRAME_CONSOLIDATION] ✅ Triggering optimization for identical parameters")
+        #             travel_logger.debug(f"[FRAME_CONSOLIDATION] ✅ Triggering optimization for identical parameters")
         #             travel_logger.info("Frame consolidation: All parameters identical - enabling optimization", task_id=orchestrator_task_id_str)
         #
         #             # Apply frame consolidation optimization
         #             orchestrator_payload = optimize_frame_allocation_for_identical_params(
         #                 orchestrator_payload,
         #                 max_frames_per_segment=81,  # Max 81 frames per video
-        #                 dprint=dprint
         #             )
         #
         #             # Update variables with optimized values
@@ -810,8 +779,8 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         #             # When segments are consolidated, we need to reassign all VACE image refs
         #             # to the new consolidated segments based on their new indices
         #             if vace_refs_instructions_all:
-        #                 dprint(f"[VACE_REFS_CONSOLIDATION] Updating VACE image refs for {num_segments} consolidated segments")
-        #                 dprint(f"[VACE_REFS_CONSOLIDATION] Original VACE refs count: {len(vace_refs_instructions_all)}")
+        #                 travel_logger.debug(f"[VACE_REFS_CONSOLIDATION] Updating VACE image refs for {num_segments} consolidated segments")
+        #                 travel_logger.debug(f"[VACE_REFS_CONSOLIDATION] Original VACE refs count: {len(vace_refs_instructions_all)}")
         #
         #                 # For consolidated segments, reassign all VACE refs to the appropriate new segment
         #                 # based on the original keyframe positions and new segment boundaries
@@ -823,10 +792,10 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         #                     new_segment_idx = 0 if num_segments == 1 else min(original_segment_idx, num_segments - 1)
         #
         #                     if original_segment_idx != new_segment_idx:
-        #                         dprint(f"[VACE_REFS_CONSOLIDATION] VACE ref {ref_idx}: segment {original_segment_idx} → {new_segment_idx}")
+        #                         travel_logger.debug(f"[VACE_REFS_CONSOLIDATION] VACE ref {ref_idx}: segment {original_segment_idx} → {new_segment_idx}")
         #                         ref_instr["segment_idx_for_naming"] = new_segment_idx
         #
-        #                 dprint(f"[VACE_REFS_CONSOLIDATION] VACE refs updated for consolidated segments")
+        #                 travel_logger.debug(f"[VACE_REFS_CONSOLIDATION] VACE refs updated for consolidated segments")
         #
         #             # Summary logging for optimization results
         #             segments_saved = original_num_segments - num_segments
@@ -834,15 +803,15 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         #             travel_logger.debug(f"Original allocation: {original_segment_frames}, Optimized: {expanded_segment_frames}", task_id=orchestrator_task_id_str)
         #             travel_logger.debug(f"Original overlaps: {original_frame_overlap}, Optimized: {expanded_frame_overlap}", task_id=orchestrator_task_id_str)
         #
-        #             dprint(f"[FRAME_CONSOLIDATION] Successfully updated to {num_segments} optimized segments")
+        #             travel_logger.debug(f"[FRAME_CONSOLIDATION] Successfully updated to {num_segments} optimized segments")
         #         else:
         #             travel_logger.warning("Frame consolidation: Safety validation failed - parameters not identical enough", task_id=orchestrator_task_id_str)
-        #             dprint(f"[FRAME_CONSOLIDATION] Safety check failed - keeping original allocation")
+        #             travel_logger.debug(f"[FRAME_CONSOLIDATION] Safety check failed - keeping original allocation")
         # else:
         #     travel_logger.info("Frame consolidation: Parameters not identical - using standard allocation", task_id=orchestrator_task_id_str)
-        #     dprint(f"[FRAME_CONSOLIDATION] Parameters not identical - keeping original allocation")
+        #     travel_logger.debug(f"[FRAME_CONSOLIDATION] Parameters not identical - keeping original allocation")
         
-        dprint(f"[FRAME_CONSOLIDATION] Consolidation disabled - using original {num_segments} segments as specified")
+        travel_logger.debug(f"[FRAME_CONSOLIDATION] Consolidation disabled - using original {num_segments} segments as specified")
         # --- END FRAME CONSOLIDATION OPTIMIZATION ---
 
         # =============================================================================
@@ -852,7 +821,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         structure_config = StructureGuidanceConfig.from_params(orchestrator_payload)
 
         # Log parsed config
-        dprint(f"[STRUCTURE_CONFIG] Parsed: {structure_config}")
+        travel_logger.debug(f"[STRUCTURE_CONFIG] Parsed: {structure_config}")
 
         # Extract values for backward compatibility with existing code paths
         # Check both legacy top-level structure_videos AND new structure_guidance.videos via config
@@ -860,7 +829,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         if not structure_videos and structure_config.videos:
             # New format: videos are in structure_guidance.videos, convert to legacy format
             structure_videos = [v.to_dict() for v in structure_config.videos]
-            dprint(f"[STRUCTURE_CONFIG] Extracted {len(structure_videos)} videos from structure_guidance.videos")
+            travel_logger.debug(f"[STRUCTURE_CONFIG] Extracted {len(structure_videos)} videos from structure_guidance.videos")
         structure_video_path = orchestrator_payload.get("structure_video_path")
 
         # Use config values (these handle all the legacy param name variations)
@@ -908,10 +877,10 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 segment_flow_offsets.append(segment_offset)
                 total_flow_frames += segment_total_frames
         
-        dprint(f"[STRUCTURE_VIDEO] Stitched timeline: {total_stitched_frames} frames")
-        dprint(f"[STRUCTURE_VIDEO] Stitched segment offsets: {segment_stitched_offsets}")
-        dprint(f"[STRUCTURE_VIDEO] Guidance timeline (legacy): {total_flow_frames} frames")
-        dprint(f"[STRUCTURE_VIDEO] Guidance segment offsets (legacy): {segment_flow_offsets}")
+        travel_logger.debug(f"[STRUCTURE_VIDEO] Stitched timeline: {total_stitched_frames} frames")
+        travel_logger.debug(f"[STRUCTURE_VIDEO] Stitched segment offsets: {segment_stitched_offsets}")
+        travel_logger.debug(f"[STRUCTURE_VIDEO] Guidance timeline (legacy): {total_flow_frames} frames")
+        travel_logger.debug(f"[STRUCTURE_VIDEO] Guidance segment offsets (legacy): {segment_flow_offsets}")
         
         # =============================================================================
         # PATH A: Multi-Structure Video (new format with structure_videos array)
@@ -921,14 +890,13 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             
             try:
                 from source.media.structure import (
-                    create_composite_guidance_video,
-                )
+                    create_composite_guidance_video)
                 
                 # Validate and extract structure_type from configs (must all match)
                 # Prefer structure_config.legacy_structure_type (set earlier), then check per-video configs
                 if structure_type:
                     # Already have structure_type from structure_config (new format)
-                    dprint(f"[STRUCTURE_VIDEO] Using structure_type from config: {structure_type}")
+                    travel_logger.debug(f"[STRUCTURE_VIDEO] Using structure_type from config: {structure_type}")
                 else:
                     # Legacy format: extract from per-video configs
                     structure_types_found = set()
@@ -947,12 +915,12 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 
                 # Use strength parameters from structure_config (already extracted earlier)
                 # These handle both new format (structure_guidance.strength) and legacy formats
-                dprint(f"[STRUCTURE_VIDEO] Using strength params: motion={motion_strength}, canny={canny_intensity}, depth={depth_contrast}")
+                travel_logger.debug(f"[STRUCTURE_VIDEO] Using strength params: motion={motion_strength}, canny={canny_intensity}, depth={depth_contrast}")
                 
                 # Log configs
                 for i, cfg in enumerate(structure_videos):
                     cfg_motion = cfg.get("motion_strength", motion_strength)
-                    dprint(f"[STRUCTURE_VIDEO] Config {i}: frames [{cfg.get('start_frame')}, {cfg.get('end_frame')}) "
+                    travel_logger.debug(f"[STRUCTURE_VIDEO] Config {i}: frames [{cfg.get('start_frame')}, {cfg.get('end_frame')}) "
                            f"from {Path(cfg.get('path', 'unknown')).name}, "
                            f"source_range=[{cfg.get('source_start_frame', 0)}, {cfg.get('source_end_frame', 'end')}), "
                            f"treatment={cfg.get('treatment', 'adjust')}, motion_strength={cfg_motion}")
@@ -967,7 +935,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                         raise ValueError(f"Invalid resolution format: {target_resolution_raw}")
                     target_resolution = snap_resolution_to_model_grid(parsed_res)
                     orchestrator_payload["parsed_resolution_wh"] = f"{target_resolution[0]}x{target_resolution[1]}"
-                    dprint(f"[STRUCTURE_VIDEO] Resolution snapped: {target_resolution_raw} → {orchestrator_payload['parsed_resolution_wh']}")
+                    travel_logger.debug(f"[STRUCTURE_VIDEO] Resolution snapped: {target_resolution_raw} → {orchestrator_payload['parsed_resolution_wh']}")
                 else:
                     target_resolution = target_resolution_raw
                 
@@ -991,9 +959,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     motion_strength=motion_strength,
                     canny_intensity=canny_intensity,
                     depth_contrast=depth_contrast,
-                    download_dir=current_run_output_dir,
-                    dprint=dprint
-                )
+                    download_dir=current_run_output_dir)
                 
                 # Flag to use stitched offsets for segment payloads
                 use_stitched_offsets = True
@@ -1001,10 +967,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 # Upload composite
                 structure_guidance_video_url = upload_and_get_final_output_location(
                     local_file_path=composite_guidance_path,
-                    supabase_object_name=composite_filename,
-                    initial_db_location=str(composite_guidance_path),
-                    dprint=dprint
-                )
+                    initial_db_location=str(composite_guidance_path))
                 
                 # Get frame count for logging
                 guidance_frame_count, _ = get_video_frame_count_and_fps(composite_guidance_path)
@@ -1017,8 +980,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 structure_config._guidance_video_url = structure_guidance_video_url
                 
             except (OSError, ValueError, RuntimeError) as e:
-                travel_logger.error(f"Failed to create composite guidance video: {e}", task_id=orchestrator_task_id_str)
-                traceback.print_exc()
+                travel_logger.error(f"Failed to create composite guidance video: {e}", task_id=orchestrator_task_id_str, exc_info=True)
                 travel_logger.warning("Structure guidance will not be available for this generation", task_id=orchestrator_task_id_str)
                 structure_config._guidance_video_url = None
 
@@ -1087,16 +1049,11 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     target_resolution=target_resolution,
                     target_fps=target_fps,
                     output_path=current_run_output_dir / trimmed_filename,
-                    treatment=structure_video_treatment,
-                    dprint=dprint
-                )
+                    treatment=structure_video_treatment)
                 
                 trimmed_video_url = upload_and_get_final_output_location(
                     local_file_path=trimmed_video_path,
-                    supabase_object_name=trimmed_filename,
-                    initial_db_location=str(trimmed_video_path),
-                    dprint=dprint
-                )
+                    initial_db_location=str(trimmed_video_path))
                 orchestrator_payload["structure_trimmed_video_url"] = trimmed_video_url
 
                 # Create guidance video
@@ -1111,16 +1068,11 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     motion_strength=motion_strength,
                     canny_intensity=canny_intensity,
                     depth_contrast=depth_contrast,
-                    treatment=structure_video_treatment,
-                    dprint=dprint
-                )
+                    treatment=structure_video_treatment)
                 
                 structure_guidance_video_url = upload_and_get_final_output_location(
                     local_file_path=structure_guidance_video_path,
-                    supabase_object_name=structure_guidance_filename,
-                    initial_db_location=str(structure_guidance_video_path),
-                    dprint=dprint
-                )
+                    initial_db_location=str(structure_guidance_video_path))
 
                 guidance_frame_count, _ = get_video_frame_count_and_fps(structure_guidance_video_path)
                 travel_logger.success(f"Structure guidance video created: {guidance_frame_count} frames", task_id=orchestrator_task_id_str)
@@ -1129,8 +1081,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 structure_config._guidance_video_url = structure_guidance_video_url
 
             except (OSError, ValueError, RuntimeError) as e:
-                travel_logger.error(f"Failed to create structure guidance video: {e}", task_id=orchestrator_task_id_str)
-                traceback.print_exc()
+                travel_logger.error(f"Failed to create structure guidance video: {e}", task_id=orchestrator_task_id_str, exc_info=True)
                 travel_logger.warning("Structure guidance will not be available", task_id=orchestrator_task_id_str)
                 structure_config._guidance_video_url = None
 
@@ -1153,16 +1104,16 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 if prompt and prompt.strip():
                     vlm_enhanced_prompts[idx] = prompt
             if vlm_enhanced_prompts:
-                dprint(f"[ENHANCED_PROMPTS] Loaded {len(vlm_enhanced_prompts)} pre-existing enhanced prompts from payload")
+                travel_logger.debug(f"[ENHANCED_PROMPTS] Loaded {len(vlm_enhanced_prompts)} pre-existing enhanced prompts from payload")
                 for idx, prompt in vlm_enhanced_prompts.items():
-                    dprint(f"[ENHANCED_PROMPTS]   Segment {idx}: '{prompt[:80]}...'")
+                    travel_logger.debug(f"[ENHANCED_PROMPTS]   Segment {idx}: '{prompt[:80]}...'")
 
         # Run VLM for segments that still need prompts (only if enhance_prompt is enabled)
         segments_needing_vlm = [idx for idx in range(num_segments) if idx not in vlm_enhanced_prompts]
         if orchestrator_payload.get("enhance_prompt", False) and not segments_needing_vlm:
-            dprint(f"[VLM_BATCH] enhance_prompt enabled but all {num_segments} segments already have prompts - skipping VLM")
+            travel_logger.debug(f"[VLM_BATCH] enhance_prompt enabled but all {num_segments} segments already have prompts - skipping VLM")
         elif orchestrator_payload.get("enhance_prompt", False) and segments_needing_vlm:
-            dprint(f"[VLM_BATCH] enhance_prompt enabled - {len(segments_needing_vlm)} segments need VLM enrichment")
+            travel_logger.debug(f"[VLM_BATCH] enhance_prompt enabled - {len(segments_needing_vlm)} segments need VLM enrichment")
             log_ram_usage("Before VLM loading", task_id=orchestrator_task_id_str)
             try:
                 # Import VLM helper
@@ -1176,19 +1127,19 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 _fps_helpers = orchestrator_payload.get("fps_helpers", 16)
 
                 # [VLM_INPUT_DEBUG] Log the source images array to verify ordering
-                dprint(f"[VLM_INPUT_DEBUG] input_images_resolved from payload ({len(input_images_resolved)} images):")
+                travel_logger.debug(f"[VLM_INPUT_DEBUG] input_images_resolved from payload ({len(input_images_resolved)} images):")
                 for i, img in enumerate(input_images_resolved):
                     img_name = Path(img).name if img else 'NONE'
-                    dprint(f"[VLM_INPUT_DEBUG]   [{i}]: {img_name}")
+                    travel_logger.debug(f"[VLM_INPUT_DEBUG]   [{i}]: {img_name}")
 
                 if base_prompt:
-                    dprint(f"[VLM_BATCH] Base prompt from payload: '{base_prompt[:80]}...'")
+                    travel_logger.debug(f"[VLM_BATCH] Base prompt from payload: '{base_prompt[:80]}...'")
 
                 # Detect single-image mode: only 1 image, no transition to describe
                 is_single_image_mode = len(input_images_resolved) == 1
 
                 if is_single_image_mode:
-                    dprint(f"[VLM_SINGLE] Detected single-image mode - using single-image VLM prompt generation")
+                    travel_logger.debug(f"[VLM_SINGLE] Detected single-image mode - using single-image VLM prompt generation")
 
                     # Import single-image VLM helper
                     from ...media.vlm import generate_single_image_prompts_batch
@@ -1219,19 +1170,17 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     
                     # Generate prompts for single images
                     if single_images:
-                        dprint(f"[VLM_SINGLE] Processing {len(single_images)} segment(s) with single-image VLM...")
+                        travel_logger.debug(f"[VLM_SINGLE] Processing {len(single_images)} segment(s) with single-image VLM...")
                         
                         enhanced_prompts = generate_single_image_prompts_batch(
                             image_paths=single_images,
                             base_prompts=single_base_prompts,
-                            device=vlm_device,
-                            dprint=dprint
-                        )
+                            device=vlm_device)
                         
                         # Map results back to segment indices
                         for idx, enhanced in zip(single_indices, enhanced_prompts):
                             vlm_enhanced_prompts[idx] = enhanced
-                            dprint(f"[VLM_SINGLE] Segment {idx}: {enhanced[:80]}...")
+                            travel_logger.debug(f"[VLM_SINGLE] Segment {idx}: {enhanced[:80]}...")
                     
                     # Skip the transition-based processing below
                     image_pairs = []
@@ -1267,12 +1216,12 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                             # [VLM_URL_DEBUG] Log the FULL source URLs (clickable in logs)
                             start_url_name = Path(start_image_url).name if start_image_url else 'NONE'
                             end_url_name = Path(end_image_url).name if end_image_url else 'NONE'
-                            dprint(f"[VLM_URL_DEBUG] ═══════════════════════════════════════════════════════")
-                            dprint(f"[VLM_URL_DEBUG] Segment {idx}: Downloading images for VLM")
-                            dprint(f"[VLM_URL_DEBUG]   START (array idx={start_anchor_idx}): {start_url_name}")
-                            dprint(f"[VLM_URL_DEBUG]   START FULL URL: {start_image_url}")
-                            dprint(f"[VLM_URL_DEBUG]   END   (array idx={end_anchor_idx}): {end_url_name}")
-                            dprint(f"[VLM_URL_DEBUG]   END   FULL URL: {end_image_url}")
+                            travel_logger.debug(f"[VLM_URL_DEBUG] ═══════════════════════════════════════════════════════")
+                            travel_logger.debug(f"[VLM_URL_DEBUG] Segment {idx}: Downloading images for VLM")
+                            travel_logger.debug(f"[VLM_URL_DEBUG]   START (array idx={start_anchor_idx}): {start_url_name}")
+                            travel_logger.debug(f"[VLM_URL_DEBUG]   START FULL URL: {start_image_url}")
+                            travel_logger.debug(f"[VLM_URL_DEBUG]   END   (array idx={end_anchor_idx}): {end_url_name}")
+                            travel_logger.debug(f"[VLM_URL_DEBUG]   END   FULL URL: {end_image_url}")
 
                             # Download images if they're URLs
                             start_image_path = download_image_if_url(
@@ -1291,8 +1240,8 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                             )
                             
                             # [VLM_URL_DEBUG] Log the downloaded local paths
-                            dprint(f"[VLM_URL_DEBUG]   START downloaded to: {Path(start_image_path).name}")
-                            dprint(f"[VLM_URL_DEBUG]   END   downloaded to: {Path(end_image_path).name}")
+                            travel_logger.debug(f"[VLM_URL_DEBUG]   START downloaded to: {Path(start_image_path).name}")
+                            travel_logger.debug(f"[VLM_URL_DEBUG]   END   downloaded to: {Path(end_image_path).name}")
 
                             image_pairs.append((start_image_path, end_image_path))
                             # Use segment-specific base_prompt if available, otherwise use overall base_prompt
@@ -1300,25 +1249,24 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                             base_prompts_for_batch.append(segment_base_prompt)
                             segment_indices.append(idx)
                         else:
-                            dprint(f"[VLM_BATCH] Segment {idx}: Skipping - image indices out of bounds (start={start_anchor_idx}, end={end_anchor_idx}, available={len(input_images_resolved)})")
+                            travel_logger.debug(f"[VLM_BATCH] Segment {idx}: Skipping - image indices out of bounds (start={start_anchor_idx}, end={end_anchor_idx}, available={len(input_images_resolved)})")
 
                 # Generate all prompts in one batch (reuses VLM model)
                 if image_pairs:
                     # [VLM_IMAGE_DEBUG] Log exactly what image pairs VLM will process
-                    dprint(f"[VLM_IMAGE_DEBUG] About to call VLM with {len(image_pairs)} image pairs:")
+                    travel_logger.debug(f"[VLM_IMAGE_DEBUG] About to call VLM with {len(image_pairs)} image pairs:")
                     for i, ((start, end), base_prompt) in enumerate(zip(image_pairs, base_prompts_for_batch)):
                         seg_idx = segment_indices[i]
                         start_name = Path(start).name if start else 'NONE'
                         end_name = Path(end).name if end else 'NONE'
                         prompt_preview = base_prompt[:50] if base_prompt else 'EMPTY'
-                        dprint(f"[VLM_IMAGE_DEBUG]   Pair {i} (segment {seg_idx}): {start_name} → {end_name}")
-                        dprint(f"[VLM_IMAGE_DEBUG]     Base prompt: '{prompt_preview}...'")
+                        travel_logger.debug(f"[VLM_IMAGE_DEBUG]   Pair {i} (segment {seg_idx}): {start_name} → {end_name}")
+                        travel_logger.debug(f"[VLM_IMAGE_DEBUG]     Base prompt: '{prompt_preview}...'")
 
                     enhanced_prompts = generate_transition_prompts_batch(
                         image_pairs=image_pairs,
                         base_prompts=base_prompts_for_batch,
                         device=vlm_device,
-                        dprint=dprint,
                         task_id=orchestrator_task_id_str,
                         upload_debug_images=True  # Upload VLM debug images for remote inspection
                     )
@@ -1326,9 +1274,9 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     # Map results back to segment indices
                     for idx, enhanced in zip(segment_indices, enhanced_prompts):
                         vlm_enhanced_prompts[idx] = enhanced
-                        dprint(f"[VLM_BATCH] Segment {idx}: {enhanced[:80]}...")
+                        travel_logger.debug(f"[VLM_BATCH] Segment {idx}: {enhanced[:80]}...")
 
-                dprint(f"[VLM_BATCH] Generated {len(vlm_enhanced_prompts)} enhanced prompts")
+                travel_logger.debug(f"[VLM_BATCH] Generated {len(vlm_enhanced_prompts)} enhanced prompts")
                 log_ram_usage("After VLM cleanup", task_id=orchestrator_task_id_str)
 
                 # Call Supabase edge function to update shot_generations with newly enriched prompts
@@ -1350,7 +1298,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                         # Extract shot_id from orchestrator_payload
                         shot_id = orchestrator_payload.get("shot_id")
                         if not shot_id:
-                            dprint(f"[VLM_BATCH] WARNING: No shot_id found in orchestrator_payload, skipping edge function call")
+                            travel_logger.debug(f"[VLM_BATCH] WARNING: No shot_id found in orchestrator_payload, skipping edge function call")
                         else:
                             # Call edge function to update shot_generations with enhanced prompts
                             edge_url = f"{db_config.SUPABASE_URL.rstrip('/')}/functions/v1/update-shot-pair-prompts"
@@ -1364,40 +1312,38 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                                 "enhanced_prompts": complete_enhanced_prompts
                             }
 
-                            dprint(f"[VLM_BATCH] Calling edge function to update shot_generations with enhanced prompts...")
-                            dprint(f"[VLM_BATCH] Payload: shot_id={shot_id}, task_id={orchestrator_task_id_str}, enhanced_prompts={len(complete_enhanced_prompts)} items")
+                            travel_logger.debug(f"[VLM_BATCH] Calling edge function to update shot_generations with enhanced prompts...")
+                            travel_logger.debug(f"[VLM_BATCH] Payload: shot_id={shot_id}, task_id={orchestrator_task_id_str}, enhanced_prompts={len(complete_enhanced_prompts)} items")
                             
                             # [EDGE_FUNC_DEBUG] Log what we're sending to the edge function
                             # Edge function will store enhanced_prompts[i] to imageGenerations[i] (ordered by timeline_frame)
                             # This MUST match input_image_paths_resolved ordering!
-                            dprint(f"[EDGE_FUNC_DEBUG] Sending {len(complete_enhanced_prompts)} prompts to edge function:")
+                            travel_logger.debug(f"[EDGE_FUNC_DEBUG] Sending {len(complete_enhanced_prompts)} prompts to edge function:")
                             for i, prompt in enumerate(complete_enhanced_prompts):
                                 img_name = Path(input_images_resolved[i]).name if i < len(input_images_resolved) else "NO_IMAGE"
                                 prompt_preview = prompt[:60] if prompt else "EMPTY"
-                                dprint(f"[EDGE_FUNC_DEBUG]   [{i}] → {img_name} | '{prompt_preview}...'")
-                            dprint(f"[EDGE_FUNC_DEBUG] WARNING: If images above don't match timeline_frame order in shot_generations, prompts will be misaligned!")
-                            dprint(f"[VLM_BATCH] Using auth token: {'SERVICE_KEY' if db_config.SUPABASE_SERVICE_KEY else ('ACCESS_TOKEN' if db_config.SUPABASE_ACCESS_TOKEN else 'None')}")
+                                travel_logger.debug(f"[EDGE_FUNC_DEBUG]   [{i}] → {img_name} | '{prompt_preview}...'")
+                            travel_logger.debug(f"[EDGE_FUNC_DEBUG] WARNING: If images above don't match timeline_frame order in shot_generations, prompts will be misaligned!")
+                            travel_logger.debug(f"[VLM_BATCH] Using auth token: {'SERVICE_KEY' if db_config.SUPABASE_SERVICE_KEY else ('ACCESS_TOKEN' if db_config.SUPABASE_ACCESS_TOKEN else 'None')}")
 
                             resp = httpx.post(edge_url, json=payload, headers=headers, timeout=30)
 
                             if resp.status_code == 200:
-                                dprint(f"[VLM_BATCH] Successfully updated shot_generations via edge function")
+                                travel_logger.debug(f"[VLM_BATCH] Successfully updated shot_generations via edge function")
                                 resp_json = resp.json()
-                                dprint(f"[VLM_BATCH] Edge function response: {resp_json}")
+                                travel_logger.debug(f"[VLM_BATCH] Edge function response: {resp_json}")
                             else:
-                                dprint(f"[VLM_BATCH] WARNING: Edge function call failed: {resp.status_code} - {resp.text}")
+                                travel_logger.debug(f"[VLM_BATCH] WARNING: Edge function call failed: {resp.status_code} - {resp.text}")
                     else:
-                        dprint(f"[VLM_BATCH] Skipping edge function call (has_auth_token={bool(auth_token)}, has_supabase_url={bool(db_config.SUPABASE_URL)}, generated={len(complete_enhanced_prompts)} prompts)")
+                        travel_logger.debug(f"[VLM_BATCH] Skipping edge function call (has_auth_token={bool(auth_token)}, has_supabase_url={bool(db_config.SUPABASE_URL)}, generated={len(complete_enhanced_prompts)} prompts)")
 
                 except (httpx.HTTPError, OSError, ValueError) as e_edge:
-                    dprint(f"[VLM_BATCH] WARNING: Failed to call edge function: {e_edge}")
-                    traceback.print_exc()
+                    travel_logger.debug(f"[VLM_BATCH] WARNING: Failed to call edge function: {e_edge}", exc_info=True)
                     # Non-fatal - continue with task creation
 
             except (RuntimeError, ValueError, OSError) as e_vlm_batch:
-                dprint(f"[VLM_BATCH] ERROR during batch VLM processing: {e_vlm_batch}")
-                traceback.print_exc()
-                dprint(f"[VLM_BATCH] Falling back to original prompts for all segments")
+                travel_logger.debug(f"[VLM_BATCH] ERROR during batch VLM processing: {e_vlm_batch}", exc_info=True)
+                travel_logger.debug(f"[VLM_BATCH] Falling back to original prompts for all segments")
                 vlm_enhanced_prompts = {}
 
         # Update orchestrator_payload with VLM enhanced prompts so they appear in debug output/DB
@@ -1413,7 +1359,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     enhanced_list[idx_prom] = prompt
             
             orchestrator_payload["enhanced_prompts_expanded"] = enhanced_list
-            dprint(f"[VLM_ENHANCE] Updated orchestrator_payload enhanced_prompts_expanded with {len(vlm_enhanced_prompts)} prompts")
+            travel_logger.debug(f"[VLM_ENHANCE] Updated orchestrator_payload enhanced_prompts_expanded with {len(vlm_enhanced_prompts)} prompts")
 
         # Loop to queue all segment tasks (skip existing ones for idempotency)
         segments_created = 0
@@ -1431,13 +1377,13 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             if use_svi:
                 # SVI mode: ALWAYS sequential - each segment needs previous output for start frame
                 previous_segment_task_id = actual_segment_db_id_by_index.get(idx - 1) if idx > 0 else None
-                dprint(f"[DEBUG_DEPENDENCY_CHAIN] Segment {idx} (SVI mode): Sequential dependency on previous segment: {previous_segment_task_id}")
+                travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN] Segment {idx} (SVI mode): Sequential dependency on previous segment: {previous_segment_task_id}")
             elif travel_mode == "i2v":
                 previous_segment_task_id = None
-                dprint(f"[DEBUG_DEPENDENCY_CHAIN] Segment {idx} (i2v mode): No dependency on previous segment")
+                travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN] Segment {idx} (i2v mode): No dependency on previous segment")
             elif travel_mode == "vace" and not chain_segments:
                 previous_segment_task_id = None
-                dprint(f"[DEBUG_DEPENDENCY_CHAIN] Segment {idx} (vace independent mode): No dependency on previous segment")
+                travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN] Segment {idx} (vace independent mode): No dependency on previous segment")
             else:
                 # VACE MODE (Sequential): Dependent on previous segment
                 previous_segment_task_id = actual_segment_db_id_by_index.get(idx - 1) if idx > 0 else None
@@ -1447,7 +1393,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 if idx > 0 and not previous_segment_task_id:
                     fallback_prev = existing_segment_task_ids.get(idx - 1)
                     if fallback_prev:
-                        dprint(f"[DEBUG_DEPENDENCY_CHAIN] Fallback resolved previous DB ID for seg {idx-1} from existing_segment_task_ids: {fallback_prev}")
+                        travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN] Fallback resolved previous DB ID for seg {idx-1} from existing_segment_task_ids: {fallback_prev}")
                         actual_segment_db_id_by_index[idx - 1] = fallback_prev
                         previous_segment_task_id = fallback_prev
                     else:
@@ -1457,18 +1403,18 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                                 if seg.get('params', {}).get('segment_index') == idx - 1:
                                     prev_from_db = seg.get('id')
                                     if prev_from_db:
-                                        dprint(f"[DEBUG_DEPENDENCY_CHAIN] DB fallback resolved previous DB ID for seg {idx-1}: {prev_from_db}")
+                                        travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN] DB fallback resolved previous DB ID for seg {idx-1}: {prev_from_db}")
                                         actual_segment_db_id_by_index[idx - 1] = prev_from_db
                                         previous_segment_task_id = prev_from_db
                                     break
                         except (RuntimeError, ValueError, OSError) as e_depdb:
-                            dprint(f"[WARN][DEBUG_DEPENDENCY_CHAIN] Could not resolve previous DB ID for seg {idx-1} via DB fallback: {e_depdb}")
+                            travel_logger.debug(f"[WARN][DEBUG_DEPENDENCY_CHAIN] Could not resolve previous DB ID for seg {idx-1} via DB fallback: {e_depdb}")
 
             # Skip if this segment already exists
             if idx in existing_segment_indices:
                 existing_db_id = existing_segment_task_ids[idx]
-                dprint(f"[IDEMPOTENCY] Skipping segment {idx} - already exists with ID {existing_db_id}")
-                dprint(f"[DEBUG_DEPENDENCY_CHAIN] Using existing DB ID for segment {idx}: {existing_db_id}; next segment will depend on this")
+                travel_logger.debug(f"[IDEMPOTENCY] Skipping segment {idx} - already exists with ID {existing_db_id}")
+                travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN] Using existing DB ID for segment {idx}: {existing_db_id}; next segment will depend on this")
                 continue
                 
             segments_created += 1
@@ -1492,7 +1438,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             ]
 
             # [DEEP_DEBUG] Log orchestrator payload values BEFORE creating segment payload
-            dprint(f"[ORCHESTRATOR_DEBUG] {orchestrator_task_id_str}: CREATING SEGMENT {idx} PAYLOAD")
+            travel_logger.debug(f"[ORCHESTRATOR_DEBUG] {orchestrator_task_id_str}: CREATING SEGMENT {idx} PAYLOAD")
             
             # Use centralized extraction to get all parameters that should be at top level
             from ...utils import extract_orchestrator_parameters
@@ -1503,9 +1449,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             }
             extracted_params = extract_orchestrator_parameters(
                 task_params_for_extraction,
-                task_id=f"seg_{idx}_{orchestrator_task_id_str[:8]}",
-                dprint=dprint
-            )
+                task_id=f"seg_{idx}_{orchestrator_task_id_str[:8]}")
 
             # VLM-enhanced prompt retrieval
             # Prompts were pre-generated in batch processing (lines 845-924) for performance.
@@ -1515,21 +1459,21 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             if idx in vlm_enhanced_prompts:
                 segment_base_prompt = vlm_enhanced_prompts[idx]
                 prompt_source = "vlm_enhanced_prompts"
-                dprint(f"[VLM_ENHANCE] Segment {idx}: Using pre-generated enhanced prompt")
+                travel_logger.debug(f"[VLM_ENHANCE] Segment {idx}: Using pre-generated enhanced prompt")
             
             # [SEGMENT_PROMPT_DEBUG] Log the prompt assignment for each segment
             input_images = orchestrator_payload.get("input_image_paths_resolved", [])
             img_start_name = Path(input_images[idx]).name if idx < len(input_images) else "OUT_OF_BOUNDS"
             img_end_name = Path(input_images[idx + 1]).name if idx + 1 < len(input_images) else "OUT_OF_BOUNDS"
-            dprint(f"[SEGMENT_PROMPT_DEBUG] Segment {idx}: images {img_start_name} → {img_end_name}")
-            dprint(f"[SEGMENT_PROMPT_DEBUG]   Prompt source: {prompt_source}")
-            dprint(f"[SEGMENT_PROMPT_DEBUG]   Prompt: '{segment_base_prompt[:80]}...'" if segment_base_prompt else "[SEGMENT_PROMPT_DEBUG]   Prompt: EMPTY")
+            travel_logger.debug(f"[SEGMENT_PROMPT_DEBUG] Segment {idx}: images {img_start_name} → {img_end_name}")
+            travel_logger.debug(f"[SEGMENT_PROMPT_DEBUG]   Prompt source: {prompt_source}")
+            travel_logger.debug(f"[SEGMENT_PROMPT_DEBUG]   Prompt: '{segment_base_prompt[:80]}...'" if segment_base_prompt else "[SEGMENT_PROMPT_DEBUG]   Prompt: EMPTY")
             
             # Fallback to orchestrator's base_prompt if segment prompt is empty
             if not segment_base_prompt or not segment_base_prompt.strip():
                 segment_base_prompt = orchestrator_payload.get("base_prompt", "")
                 if segment_base_prompt:
-                    dprint(f"[PROMPT_FALLBACK] Segment {idx}: Using orchestrator base_prompt (segment prompt was empty)")
+                    travel_logger.debug(f"[PROMPT_FALLBACK] Segment {idx}: Using orchestrator base_prompt (segment prompt was empty)")
 
             # Apply text_before_prompts and text_after_prompts wrapping (after enrichment)
             text_before = orchestrator_payload.get("text_before_prompts", "").strip()
@@ -1544,14 +1488,14 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 if text_after:
                     parts.append(text_after)
                 segment_base_prompt = " ".join(parts)
-                dprint(f"[TEXT_WRAP] Segment {idx}: Applied text_before/after wrapping")
+                travel_logger.debug(f"[TEXT_WRAP] Segment {idx}: Applied text_before/after wrapping")
 
             # Get negative prompt with fallback
             segment_negative_prompt = expanded_negative_prompts[idx] if idx < len(expanded_negative_prompts) else ""
             if not segment_negative_prompt or not segment_negative_prompt.strip():
                 segment_negative_prompt = orchestrator_payload.get("negative_prompt", "")
                 if segment_negative_prompt:
-                    dprint(f"[PROMPT_FALLBACK] Segment {idx}: Using orchestrator negative_prompt (segment negative_prompt was empty)")
+                    travel_logger.debug(f"[PROMPT_FALLBACK] Segment {idx}: Using orchestrator negative_prompt (segment negative_prompt was empty)")
 
             # Calculate segment_frames_target with context frames for segments after the first.
             # Context frames are ONLY needed for sequential VACE segments that continue from the
@@ -1561,26 +1505,26 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             if idx > 0 and current_frame_overlap_from_previous > 0 and chain_segments and (not use_svi):
                 # Sequential mode: add context frames for continuity with previous segment
                 segment_frames_target_with_context = base_segment_frames + current_frame_overlap_from_previous
-                dprint(f"[CONTEXT_FRAMES] Segment {idx}: base={base_segment_frames}, context={current_frame_overlap_from_previous}, total={segment_frames_target_with_context}")
+                travel_logger.debug(f"[CONTEXT_FRAMES] Segment {idx}: base={base_segment_frames}, context={current_frame_overlap_from_previous}, total={segment_frames_target_with_context}")
             else:
                 # First segment OR independent mode: no context frames needed
                 segment_frames_target_with_context = base_segment_frames
                 if use_svi and idx > 0:
-                    dprint(f"[CONTEXT_FRAMES] Segment {idx}: base={base_segment_frames}, no context (SVI mode)")
+                    travel_logger.debug(f"[CONTEXT_FRAMES] Segment {idx}: base={base_segment_frames}, no context (SVI mode)")
                 elif not chain_segments and idx > 0:
-                    dprint(f"[CONTEXT_FRAMES] Segment {idx}: base={base_segment_frames}, no context (independent mode)")
+                    travel_logger.debug(f"[CONTEXT_FRAMES] Segment {idx}: base={base_segment_frames}, no context (independent mode)")
                 else:
-                    dprint(f"[CONTEXT_FRAMES] Segment {idx}: base={base_segment_frames}, no context needed")
+                    travel_logger.debug(f"[CONTEXT_FRAMES] Segment {idx}: base={base_segment_frames}, no context needed")
             
             # Ensure frame count is valid 4N+1 (VAE temporal quantization requirement)
             # Invalid counts cause mask/guide vs output frame count mismatches
             if (segment_frames_target_with_context - 1) % 4 != 0:
                 old_count = segment_frames_target_with_context
                 segment_frames_target_with_context = ((segment_frames_target_with_context - 1) // 4) * 4 + 1
-                dprint(f"[FRAME_QUANTIZATION] Segment {idx}: {old_count} -> {segment_frames_target_with_context} (enforcing 4N+1 rule)")
+                travel_logger.debug(f"[FRAME_QUANTIZATION] Segment {idx}: {old_count} -> {segment_frames_target_with_context} (enforcing 4N+1 rule)")
             
             # Consolidated segment frame count log for easy debugging
-            dprint(f"[SEGMENT_FRAMES] Segment {idx}: FINAL frame target = {segment_frames_target_with_context} (valid 4N+1: ✓)")
+            travel_logger.debug(f"[SEGMENT_FRAMES] Segment {idx}: FINAL frame target = {segment_frames_target_with_context} (valid 4N+1: ✓)")
 
             segment_payload = {
                 "orchestrator_task_id_ref": orchestrator_task_id_str,
@@ -1652,7 +1596,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                     structure_videos=structure_videos
                 )
                 if not segment_has_guidance:
-                    dprint(f"[STRUCTURE_VIDEO] Segment {idx}: No overlap with structure_videos, skipping structure guidance")
+                    travel_logger.debug(f"[STRUCTURE_VIDEO] Segment {idx}: No overlap with structure_videos, skipping structure guidance")
 
             # Set structure guidance using unified format only
             if segment_has_guidance:
@@ -1685,17 +1629,17 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             # Add per-segment phase_config if available
             if idx < len(phase_configs_expanded) and phase_configs_expanded[idx] is not None:
                 individual_segment_params["phase_config"] = phase_configs_expanded[idx]
-                dprint(f"[PER_SEGMENT_PARAMS] Segment {idx}: Using per-segment phase_config override")
+                travel_logger.debug(f"[PER_SEGMENT_PARAMS] Segment {idx}: Using per-segment phase_config override")
 
             # Add per-segment LoRAs if available
             if idx < len(loras_per_segment_expanded) and loras_per_segment_expanded[idx] is not None:
                 individual_segment_params["segment_loras"] = loras_per_segment_expanded[idx]
-                dprint(f"[PER_SEGMENT_PARAMS] Segment {idx}: Using per-segment LoRA override ({len(loras_per_segment_expanded[idx])} LoRAs)")
+                travel_logger.debug(f"[PER_SEGMENT_PARAMS] Segment {idx}: Using per-segment LoRA override ({len(loras_per_segment_expanded[idx])} LoRAs)")
 
             # Only add individual_segment_params if it has content
             if individual_segment_params:
                 segment_payload["individual_segment_params"] = individual_segment_params
-                dprint(f"[PER_SEGMENT_PARAMS] Segment {idx}: Added individual_segment_params with keys: {list(individual_segment_params.keys())}")
+                travel_logger.debug(f"[PER_SEGMENT_PARAMS] Segment {idx}: Added individual_segment_params with keys: {list(individual_segment_params.keys())}")
 
             # Add extracted parameters at top level for queue processing
             segment_payload.update(extracted_params)
@@ -1704,14 +1648,14 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             # IMPORTANT: First segment (idx == 0) does NOT use SVI mode - it generates normally.
             # Only subsequent segments use SVI end frame chaining from the previous segment's output.
             if use_svi and idx > 0:
-                dprint(f"[SVI_CONFIG] Segment {idx}: Configuring SVI mode")
+                travel_logger.debug(f"[SVI_CONFIG] Segment {idx}: Configuring SVI mode")
 
                 # Force SVI generation parameters (SVI LoRAs are 2-phase and expect these defaults)
                 for key, value in SVI_DEFAULT_PARAMS.items():
                     prev_val = segment_payload.get(key, None)
                     if prev_val != value:
                         segment_payload[key] = value
-                        dprint(f"[SVI_CONFIG] Segment {idx}: Set {key}={value} (was {prev_val})")
+                        travel_logger.debug(f"[SVI_CONFIG] Segment {idx}: Set {key}={value} (was {prev_val})")
 
                 # SVI requires svi2pro=True for encoding mode
                 segment_payload["svi2pro"] = True
@@ -1722,7 +1666,7 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 # For SVI, use smaller overlap since end/start frames should mostly match
                 segment_payload["frame_overlap_with_next"] = SVI_STITCH_OVERLAP if idx < (num_segments - 1) else 0
                 segment_payload["frame_overlap_from_previous"] = SVI_STITCH_OVERLAP if idx > 0 else 0
-                dprint(
+                travel_logger.debug(
                     f"[SVI_CONFIG] Segment {idx}: "
                     f"frame_overlap_from_previous={segment_payload['frame_overlap_from_previous']} "
                     f"frame_overlap_with_next={segment_payload['frame_overlap_with_next']} (SVI mode)"
@@ -1731,22 +1675,22 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
                 # First segment: disable SVI mode - generate normally from start image
                 segment_payload["use_svi"] = False
                 segment_payload["svi2pro"] = False
-                dprint(f"[SVI_CONFIG] Segment {idx}: First segment - SVI disabled (use_svi=False, svi2pro=False)")
+                travel_logger.debug(f"[SVI_CONFIG] Segment {idx}: First segment - SVI disabled (use_svi=False, svi2pro=False)")
 
             # [DEEP_DEBUG] Log segment payload values AFTER creation
-            dprint(f"[ORCHESTRATOR_DEBUG] {orchestrator_task_id_str}: SEGMENT {idx} PAYLOAD CREATED")
-            dprint(f"[DEEP_DEBUG] Segment payload keys: {list(segment_payload.keys())}")
+            travel_logger.debug(f"[ORCHESTRATOR_DEBUG] {orchestrator_task_id_str}: SEGMENT {idx} PAYLOAD CREATED")
+            travel_logger.debug(f"[DEEP_DEBUG] Segment payload keys: {list(segment_payload.keys())}")
 
             # === CANCELLATION CHECK: Abort if orchestrator was cancelled ===
             orchestrator_current_status = db_ops.get_task_current_status(orchestrator_task_id_str)
             if orchestrator_current_status and orchestrator_current_status.lower() in ('cancelled', 'canceled'):
-                dprint(f"[CANCELLATION] Orchestrator {orchestrator_task_id_str} was cancelled - aborting segment creation at index {idx}")
+                travel_logger.debug(f"[CANCELLATION] Orchestrator {orchestrator_task_id_str} was cancelled - aborting segment creation at index {idx}")
                 travel_logger.essential(f"Orchestrator cancelled, stopping segment creation at segment {idx}", task_id=orchestrator_task_id_str)
                 # Cancel any child tasks that were already created in earlier iterations
                 db_ops.cancel_orchestrator_children(orchestrator_task_id_str, reason="Orchestrator cancelled by user")
-                return False, f"Orchestrator cancelled before segment {idx} could be created ({segments_created} segments were already created and have been cancelled)"
+                return TaskResult.failed(f"Orchestrator cancelled before segment {idx} could be created ({segments_created} segments were already created and have been cancelled)")
 
-            dprint(f"[DEBUG_DEPENDENCY_CHAIN] Creating new segment {idx}, depends_on (prev idx {idx-1}): {previous_segment_task_id}")
+            travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN] Creating new segment {idx}, depends_on (prev idx {idx-1}): {previous_segment_task_id}")
             travel_logger.essential(f"Creating segment {idx} task...", task_id=orchestrator_task_id_str)
             actual_db_row_id = db_ops.add_task_to_db(
                 task_payload=segment_payload, 
@@ -1756,14 +1700,14 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             # Record the actual DB ID so subsequent segments depend on the real DB row ID
             actual_segment_db_id_by_index[idx] = actual_db_row_id
             travel_logger.essential(f"Segment {idx} created: task_id={actual_db_row_id}", task_id=orchestrator_task_id_str)
-            dprint(f"[DEBUG_DEPENDENCY_CHAIN] New segment {idx} created with actual DB ID: {actual_db_row_id}; next segment will depend on this")
+            travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN] New segment {idx} created with actual DB ID: {actual_db_row_id}; next segment will depend on this")
             # Post-insert verification of dependency from DB
             try:
                 dep_saved = db_ops.get_task_dependency(actual_db_row_id)
-                dprint(f"[DEBUG_DEPENDENCY_CHAIN][VERIFY] Segment {idx} saved dependant_on={dep_saved} (expected {previous_segment_task_id})")
+                travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN][VERIFY] Segment {idx} saved dependant_on={dep_saved} (expected {previous_segment_task_id})")
                 travel_logger.debug(f"Segment {idx} dependency verified: dependant_on={dep_saved}", task_id=orchestrator_task_id_str)
             except (RuntimeError, ValueError, OSError) as e_ver:
-                dprint(f"[WARN][DEBUG_DEPENDENCY_CHAIN] Could not verify dependant_on for seg {idx} ({actual_db_row_id}): {e_ver}")
+                travel_logger.debug(f"[WARN][DEBUG_DEPENDENCY_CHAIN] Could not verify dependant_on for seg {idx} ({actual_db_row_id}): {e_ver}")
                 travel_logger.warning(f"Segment {idx} dependency verification failed (likely replication lag): {e_ver}", task_id=orchestrator_task_id_str)
         
         # After loop, enqueue the stitch task (check for idempotency)
@@ -1778,14 +1722,14 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             should_create_stitch = True
             # For SVI, use the small overlap value
             stitch_overlap_settings = [SVI_STITCH_OVERLAP] * (num_segments - 1) if num_segments > 1 else []
-            dprint(f"[STITCHING] SVI mode: Creating stitch task with overlap={SVI_STITCH_OVERLAP}")
+            travel_logger.debug(f"[STITCHING] SVI mode: Creating stitch task with overlap={SVI_STITCH_OVERLAP}")
         elif travel_mode == "vace" and chain_segments:
             # VACE sequential mode: Create stitch task with configured overlaps
             should_create_stitch = True
             stitch_overlap_settings = expanded_frame_overlap
-            dprint(f"[STITCHING] VACE sequential mode: Creating stitch task with overlaps={expanded_frame_overlap}")
+            travel_logger.debug(f"[STITCHING] VACE sequential mode: Creating stitch task with overlaps={expanded_frame_overlap}")
         else:
-            dprint(f"[STITCHING] Skipping stitch task creation (mode={travel_mode}, chain_segments={chain_segments}, use_svi={use_svi})")
+            travel_logger.debug(f"[STITCHING] Skipping stitch task creation (mode={travel_mode}, chain_segments={chain_segments}, use_svi={use_svi})")
         
         if should_create_stitch and not stitch_already_exists:
             final_stitched_video_name = f"travel_final_stitched_{run_id}.mp4"
@@ -1826,24 +1770,24 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             
             # Stitch should depend on the last segment's actual DB row ID
             last_segment_task_id = actual_segment_db_id_by_index.get(num_segments - 1)
-            dprint(f"[DEBUG_DEPENDENCY_CHAIN] Creating stitch task, depends_on (last seg idx {num_segments-1}): {last_segment_task_id}")
+            travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN] Creating stitch task, depends_on (last seg idx {num_segments-1}): {last_segment_task_id}")
             actual_stitch_db_row_id = db_ops.add_task_to_db(
                 task_payload=stitch_payload, 
                 task_type_str="travel_stitch",
                 dependant_on=last_segment_task_id
             )
-            dprint(f"[DEBUG_DEPENDENCY_CHAIN] Stitch task created with actual DB ID: {actual_stitch_db_row_id}")
+            travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN] Stitch task created with actual DB ID: {actual_stitch_db_row_id}")
             
             # Post-insert verification of dependency from DB
             try:
                 dep_saved = db_ops.get_task_dependency(actual_stitch_db_row_id)
-                dprint(f"[DEBUG_DEPENDENCY_CHAIN][VERIFY] Stitch saved dependant_on={dep_saved} (expected {last_segment_task_id})")
+                travel_logger.debug(f"[DEBUG_DEPENDENCY_CHAIN][VERIFY] Stitch saved dependant_on={dep_saved} (expected {last_segment_task_id})")
                 travel_logger.essential(f"Stitch task created: task_id={actual_stitch_db_row_id}", task_id=orchestrator_task_id_str)
             except (RuntimeError, ValueError, OSError) as e_ver2:
-                dprint(f"[WARN][DEBUG_DEPENDENCY_CHAIN] Could not verify dependant_on for stitch ({actual_stitch_db_row_id}): {e_ver2}")
+                travel_logger.debug(f"[WARN][DEBUG_DEPENDENCY_CHAIN] Could not verify dependant_on for stitch ({actual_stitch_db_row_id}): {e_ver2}")
             stitch_created = 1
         elif stitch_already_exists:
-            dprint(f"[IDEMPOTENCY] Skipping stitch task creation - already exists with ID {existing_stitch_task_id}")
+            travel_logger.debug(f"[IDEMPOTENCY] Skipping stitch task creation - already exists with ID {existing_stitch_task_id}")
 
         # === JOIN CLIPS ORCHESTRATOR (for AI-generated transitions) ===
         # If stitch_config is provided, create a join_clips_orchestrator that will generate
@@ -1856,12 +1800,12 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
         join_orchestrator_already_exists = len(existing_join_orchestrators) > 0
 
         if stitch_config and not join_orchestrator_already_exists:
-            dprint(f"[JOIN_STITCH] stitch_config detected - creating join_clips_orchestrator for AI transitions")
-            dprint(f"[JOIN_STITCH] stitch_config: {stitch_config}")
+            travel_logger.debug(f"[JOIN_STITCH] stitch_config detected - creating join_clips_orchestrator for AI transitions")
+            travel_logger.debug(f"[JOIN_STITCH] stitch_config: {stitch_config}")
 
             # Collect ALL segment task IDs for multi-dependency
             all_segment_task_ids = [actual_segment_db_id_by_index[i] for i in range(num_segments)]
-            dprint(f"[JOIN_STITCH] All segment task IDs ({len(all_segment_task_ids)}): {all_segment_task_ids}")
+            travel_logger.debug(f"[JOIN_STITCH] All segment task IDs ({len(all_segment_task_ids)}): {all_segment_task_ids}")
 
             # Build join_clips_orchestrator payload from stitch_config
             join_orchestrator_payload = {
@@ -1908,39 +1852,34 @@ def _handle_travel_orchestrator_task(task_params_from_db: dict, main_output_dir_
             }
 
             # Create join_clips_orchestrator with multi-dependency on ALL segments
-            dprint(f"[JOIN_STITCH] Creating join_clips_orchestrator dependent on {len(all_segment_task_ids)} segments")
+            travel_logger.debug(f"[JOIN_STITCH] Creating join_clips_orchestrator dependent on {len(all_segment_task_ids)} segments")
             join_orchestrator_task_id = db_ops.add_task_to_db(
                 task_payload={"orchestrator_details": join_orchestrator_payload},
                 task_type_str="join_clips_orchestrator",
                 dependant_on=all_segment_task_ids  # Multi-dependency: all segments must complete
             )
-            dprint(f"[JOIN_STITCH] ✅ join_clips_orchestrator created: {join_orchestrator_task_id}")
+            travel_logger.debug(f"[JOIN_STITCH] ✅ join_clips_orchestrator created: {join_orchestrator_task_id}")
             travel_logger.info(f"Created join_clips_orchestrator {join_orchestrator_task_id} for AI-stitching {num_segments} segments", task_id=orchestrator_task_id_str)
             join_orchestrator_created = True
 
         elif stitch_config and join_orchestrator_already_exists:
-            dprint(f"[IDEMPOTENCY] Skipping join_clips_orchestrator creation - already exists")
+            travel_logger.debug(f"[IDEMPOTENCY] Skipping join_clips_orchestrator creation - already exists")
 
-        generation_success = True
         if segments_created > 0:
             extra_info = ""
             if join_orchestrator_created:
                 extra_info = " + join_clips_orchestrator for AI transitions"
             elif stitch_created:
                 extra_info = " + travel_stitch task"
-            output_message_for_orchestrator_db = f"Successfully enqueued {segments_created} new segment tasks for run {run_id}{extra_info}. (Total expected: {num_segments} segments)"
+            msg = f"Successfully enqueued {segments_created} new segment tasks for run {run_id}{extra_info}. (Total expected: {num_segments} segments)"
         else:
-            output_message_for_orchestrator_db = f"[IDEMPOTENT] All child tasks already exist for run {run_id}. No new tasks created."
-        travel_logger.info(output_message_for_orchestrator_db, task_id=orchestrator_task_id_str)
+            msg = f"All child tasks already exist for run {run_id}. No new tasks created."
+        travel_logger.info(msg, task_id=orchestrator_task_id_str)
         log_ram_usage("Orchestrator end (success)", task_id=orchestrator_task_id_str)
+        return TaskResult.orchestrating(msg)
 
     except (RuntimeError, ValueError, OSError, KeyError, TypeError) as e:
         msg = f"Failed during travel orchestration processing: {e}"
-        travel_logger.error(msg, task_id=orchestrator_task_id_str)
-        travel_logger.debug(traceback.format_exc(), task_id=orchestrator_task_id_str)
-        traceback.print_exc()
-        generation_success = False
-        output_message_for_orchestrator_db = msg
+        travel_logger.error(msg, task_id=orchestrator_task_id_str, exc_info=True)
         log_ram_usage("Orchestrator end (error)", task_id=orchestrator_task_id_str)
-
-    return generation_success, output_message_for_orchestrator_db
+        return TaskResult.failed(msg)
