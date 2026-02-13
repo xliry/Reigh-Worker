@@ -65,11 +65,11 @@ def output_dir(tmp_path):
 
 @pytest.fixture()
 def test_images():
-    """Return paths to the 3 uploaded neon botanical test images."""
+    """Return paths to 3 test images."""
     paths = [
-        str(TESTS_DIR / "CICEK .png"),
-        str(TESTS_DIR / "CICEK 2.png"),
-        str(TESTS_DIR / "2AF816ADD8BC6EE937FEA5D5B3061DC047BBD8BA5A77E91A5158BF6C86C9FAD1.jpeg"),
+        str(TESTS_DIR / "1.jpg"),
+        str(TESTS_DIR / "2.jpg"),
+        str(TESTS_DIR / "3.jpg"),
     ]
     for p in paths:
         if not os.path.isfile(p):
@@ -164,9 +164,9 @@ class TestTravelOrchestratorPayload:
             assert start != end, f"Segment {idx}: start and end should differ"
 
         # Verify specific pairing
-        assert Path(images[0]).name == "CICEK .png"
-        assert Path(images[1]).name == "CICEK 2.png"
-        assert Path(images[2]).name.startswith("2AF816")
+        assert Path(images[0]).name == "1.jpg"
+        assert Path(images[1]).name == "2.jpg"
+        assert Path(images[2]).name == "3.jpg"
 
     def test_frame_overlap_count_is_n_minus_1(self, test_images):
         """N segments → N-1 overlaps."""
@@ -231,12 +231,12 @@ class TestTravelSegmentImageAssignment:
             assert Path(start_img).exists()
             assert Path(end_img).exists()
 
-        # seg0: CICEK .png → CICEK 2.png
-        assert Path(images[0]).name == "CICEK .png"
-        assert Path(images[1]).name == "CICEK 2.png"
-        # seg1: CICEK 2.png → 2AF816...jpeg
-        assert Path(images[1]).name == "CICEK 2.png"
-        assert Path(images[2]).name.startswith("2AF816")
+        # seg0: 1.jpg → 2.jpg
+        assert Path(images[0]).name == "1.jpg"
+        assert Path(images[1]).name == "2.jpg"
+        # seg1: 2.jpg → 3.jpg
+        assert Path(images[1]).name == "2.jpg"
+        assert Path(images[2]).name == "3.jpg"
 
     def test_ltx2_image_start_end(self, test_images):
         """LTX-2 mode uses image_start / image_end with image_prompt_type='TSE'."""
