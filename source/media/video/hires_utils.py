@@ -148,9 +148,7 @@ class HiresFixHelper:
             return loras_slists, phase_values, active_count
 
         except (ValueError, TypeError, RuntimeError) as e:
-            headless_logger.error(f"Error filtering LoRAs for phase {phase_index}: {e}")
-            import traceback
-            traceback.print_exc()
+            headless_logger.error(f"Error filtering LoRAs for phase {phase_index}: {e}", exc_info=True)
             return None, [], 0
 
     @staticmethod

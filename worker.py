@@ -26,7 +26,6 @@ suppress_alsa_errors()
 import argparse
 import time
 import datetime
-import traceback
 import threading
 import logging
 from pathlib import Path
@@ -51,9 +50,7 @@ from source.core.log import (
     headless_logger, enable_debug_mode, disable_debug_mode,
     LogBuffer, CustomLogInterceptor, set_log_interceptor, set_log_file
 )
-from source.task_handlers.worker.worker_utils import (
-    dprint, cleanup_generated_files
-)
+from source.task_handlers.worker.worker_utils import cleanup_generated_files
 from source.task_handlers.worker.heartbeat_utils import start_heartbeat_guardian_process
 from source.task_handlers.tasks.task_registry import TaskRegistry
 from source.task_handlers.travel.chaining import _handle_travel_chaining_after_wgp
@@ -128,15 +125,16 @@ def move_wgp_output_to_task_type_dir(output_path: str, task_type: str, task_id: 
         return str(new_path)
 
     except (OSError, shutil.Error, ValueError) as e:
-        headless_logger.error(f"Failed to move WGP output to task-type directory: {e}", task_id=task_id)
-        traceback.print_exc()
+        headless_logger.error(f"Failed to move WGP output to task-type directory: {e}", task_id=task_id, exc_info=True)
         # Return original path if move fails
         return output_path
 
 def process_single_task(task_params_dict, main_output_dir_base: Path, task_type: str, project_id_for_task: str | None, image_download_dir: Path | str | None = None, colour_match_videos: bool = False, mask_active_frames: bool = True, task_queue: HeadlessTaskQueue = None):
+    from source.core.params.task_result import TaskResult, TaskOutcome
+
     task_id = task_params_dict.get("task_id", "unknown_task_" + str(time.time()))
     headless_logger.essential(f"Processing {task_type} task", task_id=task_id)
-    
+
     context = {
         "task_params_dict": task_params_dict,
         "main_output_dir_base": main_output_dir_base,
@@ -149,7 +147,8 @@ def process_single_task(task_params_dict, main_output_dir_base: Path, task_type:
         "wan2gp_path": wan2gp_path,
     }
 
-    generation_success, output_location_to_db = TaskRegistry.dispatch(task_type, context)
+    result = TaskRegistry.dispatch(task_type, context)
+    generation_success, output_location_to_db = result  # backward-compat unpacking
 
     # Chaining Logic
     if generation_success:
@@ -161,7 +160,6 @@ def process_single_task(task_params_dict, main_output_dir_base: Path, task_type:
                 actual_wgp_output_video_path=output_location_to_db,
                 image_download_dir=image_download_dir,
                 main_output_dir_base=main_output_dir_base,
-                dprint=lambda msg: dprint(msg, task_id=task_id, debug_mode=debug_mode)
             )
             if chain_success:
                 chaining_result_path_override = final_path_from_chaining
@@ -186,6 +184,19 @@ def process_single_task(task_params_dict, main_output_dir_base: Path, task_type:
         task_params_dict["task_id"] = task_id
 
     headless_logger.essential(f"Finished task (Success: {generation_success})", task_id=task_id)
+
+    # Return structured TaskResult when the dispatch returned one, preserving
+    # thumbnail_url and outcome through the post-processing pipeline.
+    if isinstance(result, TaskResult):
+        if result.outcome == TaskOutcome.FAILED:
+            return result
+        # Rebuild with potentially-modified output_location_to_db
+        return TaskResult(
+            outcome=result.outcome,
+            output_path=output_location_to_db,
+            thumbnail_url=result.thumbnail_url,
+            metadata=result.metadata,
+        )
     return generation_success, output_location_to_db
 
 
@@ -283,6 +294,12 @@ def main():
         # Propagate to os.environ for code that can't import db_operations
         # (fatal_error_handler during crashes, headless_wgp notify_model_switch)
         os.environ["SUPABASE_URL"] = cli_args.supabase_url
+
+        # Validate config after initialization
+        config_errors = db_config.validate_config()
+        if config_errors:
+            for err in config_errors:
+                headless_logger.warning(f"[CONFIG] {err}")
 
     except (ValueError, OSError, KeyError) as e:
         headless_logger.critical(f"Supabase init failed: {e}")
@@ -384,7 +401,8 @@ def main():
             if _log_interceptor_instance:
                 _log_interceptor_instance.set_current_task(current_task_id)
 
-            task_succeeded, output_location = process_single_task(
+            from source.core.params.task_result import TaskResult, TaskOutcome
+            raw_result = process_single_task(
                 current_task_params, main_output_dir, current_task_type, current_project_id,
                 image_download_dir=current_task_params.get("segment_image_download_dir"),
                 colour_match_videos=cli_args.colour_match_videos,
@@ -392,13 +410,28 @@ def main():
                 task_queue=task_queue
             )
 
+            # Unpack: raw_result is either a TaskResult or a legacy (bool, str) tuple
+            if isinstance(raw_result, TaskResult):
+                result = raw_result
+                task_succeeded, output_location = raw_result  # __iter__ unpacking
+            else:
+                task_succeeded, output_location = raw_result
+                result = None
+
             if task_succeeded:
                 reset_fatal_error_counter()
 
                 orchestrator_types = {"travel_orchestrator", "join_clips_orchestrator", "edit_video_orchestrator"}
 
                 if current_task_type in orchestrator_types:
-                    if output_location and output_location.startswith("[ORCHESTRATOR_COMPLETE]"):
+                    if result and result.outcome == TaskOutcome.ORCHESTRATOR_COMPLETE:
+                        db_ops.update_task_status_supabase(
+                            current_task_id, db_ops.STATUS_COMPLETE,
+                            result.output_path, result.thumbnail_url)
+                    elif result and result.outcome == TaskOutcome.ORCHESTRATING:
+                        db_ops.update_task_status(current_task_id, db_ops.STATUS_IN_PROGRESS, result.output_path)
+                    elif isinstance(output_location, str) and output_location.startswith("[ORCHESTRATOR_COMPLETE]"):
+                        # Legacy string prefix parsing (backward compat during migration)
                         actual_output = output_location.replace("[ORCHESTRATOR_COMPLETE]", "")
                         thumbnail_url = None
                         try:
@@ -407,21 +440,20 @@ def main():
                             actual_output = data.get("output_location", actual_output)
                             thumbnail_url = data.get("thumbnail_url")
                         except (json.JSONDecodeError, TypeError, KeyError):
-                            pass  # actual_output is a plain string, not JSON - use as-is
-                        
+                            pass
                         db_ops.update_task_status_supabase(current_task_id, db_ops.STATUS_COMPLETE, actual_output, thumbnail_url)
                     else:
                         db_ops.update_task_status(current_task_id, db_ops.STATUS_IN_PROGRESS, output_location)
                 else:
                     db_ops.update_task_status_supabase(current_task_id, db_ops.STATUS_COMPLETE, output_location)
-                    
+
                     # Note: Orchestrator completion is handled by the complete-task Edge Function
                     # based on checking if all child tasks are complete.
-                    
+
                     cleanup_generated_files(output_location, current_task_id, debug_mode)
             else:
                 # Task failed - check if this is a retryable error
-                error_message = output_location or "Unknown error"
+                error_message = (result.error_message if result else output_location) or "Unknown error"
                 is_retryable, error_category, max_attempts = is_retryable_error(error_message)
                 current_attempts = task_info.get("attempts", 0)
                 

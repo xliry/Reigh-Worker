@@ -10,12 +10,15 @@ import httpx
 
 from source.core.log import headless_logger
 
+__all__ = [
+    "_call_edge_function_with_retry",
+    "_get_user_id_from_jwt",
+    "_is_jwt_token",
+]
+
 from .config import (
     EDGE_FAIL_PREFIX,
-    RETRYABLE_STATUS_CODES,
-    dprint,
-)
-
+    RETRYABLE_STATUS_CODES)
 
 def _call_edge_function_with_retry(
     edge_url: str,
@@ -79,7 +82,7 @@ def _call_edge_function_with_retry(
 
             # Handle 404 fallback (e.g. hyphen vs underscore naming)
             if resp.status_code == 404 and fallback_url:
-                dprint(f"[RETRY] {function_name} returned 404; trying fallback URL: {fallback_url}")
+                headless_logger.debug(f"[RETRY] {function_name} returned 404; trying fallback URL: {fallback_url}")
                 if method == "PUT":
                     if isinstance(payload, (str, Path)) and Path(payload).exists():
                         with open(Path(payload), "rb") as f:
@@ -100,7 +103,7 @@ def _call_edge_function_with_retry(
                 if should_retry:
                     wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
                     headless_logger.essential(f"[RETRY] {function_name} got 404 with retryable pattern{ctx} (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s...")
-                    dprint(f"[RETRY] 404 response: {resp_text[:200]}")
+                    headless_logger.debug(f"[RETRY] 404 response: {resp_text[:200]}")
                     time.sleep(wait_time)
                     continue
 
@@ -146,7 +149,6 @@ def _call_edge_function_with_retry(
     error_msg = f"{EDGE_FAIL_PREFIX}:{function_name}:UNKNOWN] All retries exhausted{ctx}"
     return None, error_msg
 
-
 # -----------------------------------------------------------------------------
 # Internal Helpers for Supabase
 # -----------------------------------------------------------------------------
@@ -163,10 +165,10 @@ def _get_user_id_from_jwt(jwt_str: str) -> str | None:
         payload_json = base64.b64decode(payload_b64).decode('utf-8')
         payload = json.loads(payload_json)
         user_id = payload.get('sub')
-        dprint(f"JWT Decode: Extracted user ID (sub): {user_id}")
+        headless_logger.debug(f"JWT Decode: Extracted user ID (sub): {user_id}")
         return user_id
     except (ValueError, KeyError, json.JSONDecodeError) as e:
-        dprint(f"[ERROR] Could not decode JWT to get user ID: {e}")
+        headless_logger.debug(f"[ERROR] Could not decode JWT to get user ID: {e}")
         return None
 
 def _is_jwt_token(token_str: str) -> bool:

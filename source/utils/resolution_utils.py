@@ -1,5 +1,10 @@
 """Resolution parsing and snapping utilities."""
 
+__all__ = [
+    "snap_resolution_to_model_grid",
+    "parse_resolution",
+]
+
 
 def snap_resolution_to_model_grid(parsed_res: tuple[int, int]) -> tuple[int, int]:
     """
@@ -26,4 +31,4 @@ def parse_resolution(res_str: str) -> tuple[int, int]:
             raise ValueError("Width and height must be positive.")
         return w, h
     except ValueError as e:
-        raise ValueError(f"Resolution string must be in WIDTHxHEIGHT format with positive integers (e.g., '960x544'), got {res_str}. Error: {e}")
+        raise ValueError(f"Resolution string must be in WIDTHxHEIGHT format with positive integers (e.g., '960x544'), got {res_str}. Error: {e}") from e

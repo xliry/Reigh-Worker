@@ -1,27 +1,12 @@
-"""Prompt validation, debug helpers, status constants, and task ID generation."""
+"""Prompt validation and task ID generation."""
 
 import uuid
-from datetime import datetime
 
-from source.core.log import headless_logger
-
-# --- Global Debug Mode ---
-# This will be set by the main script (steerable_motion.py)
-DEBUG_MODE = False
-
-# --- Constants for DB interaction and defaults ---
-STATUS_QUEUED = "Queued"
-STATUS_IN_PROGRESS = "In Progress"
-STATUS_COMPLETE = "Complete"
-STATUS_FAILED = "Failed"
-DEFAULT_DB_TABLE_NAME = "tasks"
-
-
-# --- Debug / Verbose Logging Helper ---
-def dprint(msg: str):
-    """Print a debug message if DEBUG_MODE is enabled."""
-    if DEBUG_MODE:
-        headless_logger.debug(f"[SM-COMMON] {msg}")
+__all__ = [
+    "ensure_valid_prompt",
+    "ensure_valid_negative_prompt",
+    "generate_unique_task_id",
+]
 
 
 def _ensure_valid_text(text: str | None) -> str:

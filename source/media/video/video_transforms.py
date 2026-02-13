@@ -1,12 +1,11 @@
 """Video transforms: brightness, reverse, aspect ratio, audio, overlay."""
 import subprocess
-import traceback
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from source.core.log import headless_logger
+from source.core.log import headless_logger, generation_logger
 from source.media.video.frame_extraction import extract_frames_from_video
 from source.media.video.video_info import get_video_frame_count_and_fps
 from source.media.video.ffmpeg_ops import create_video_from_frames_list
@@ -25,7 +24,6 @@ __all__ = [
     "add_audio_to_video",
     "overlay_start_end_images_above_video",
 ]
-
 
 def adjust_frame_brightness(frame: np.ndarray, brightness_adjust: float) -> np.ndarray:
     if brightness_adjust == 0:
@@ -68,24 +66,15 @@ def apply_brightness_to_video_frames(input_video_path: str, output_video_path: P
         resolution = (w, h)
 
         created_video_path = create_video_from_frames_list(adjusted_frames, output_video_path, fps, resolution)
-        if created_video_path and created_video_path.exists():
-            headless_logger.essential(f"Task {task_id_for_logging}: Successfully created brightness-adjusted video at {created_video_path}", task_id=task_id_for_logging)
-            return created_video_path
-        else:
-            headless_logger.error(f"Task {task_id_for_logging}: Failed to create brightness-adjusted video.", task_id=task_id_for_logging)
-            return None
+        headless_logger.essential(f"Task {task_id_for_logging}: Successfully created brightness-adjusted video at {created_video_path}", task_id=task_id_for_logging)
+        return created_video_path
     except (OSError, ValueError, RuntimeError) as e:
-        headless_logger.error(f"Task {task_id_for_logging}: Exception in apply_brightness_to_video_frames: {e}", task_id=task_id_for_logging)
-        traceback.print_exc()
+        headless_logger.error(f"Task {task_id_for_logging}: Exception in apply_brightness_to_video_frames: {e}", task_id=task_id_for_logging, exc_info=True)
         return None
-
 
 def reverse_video(
     input_video_path: str | Path,
-    output_video_path: str | Path,
-    *,
-    dprint=print
-) -> Path | None:
+    output_video_path: str | Path) -> Path | None:
     """
     Reverse a video using FFmpeg (play it backwards) with visually lossless quality.
 
@@ -94,7 +83,6 @@ def reverse_video(
     Args:
         input_video_path: Path to input video
         output_video_path: Path for reversed output video
-        dprint: Debug print function
 
     Returns:
         Path to reversed video if successful, None otherwise
@@ -103,7 +91,7 @@ def reverse_video(
     output_path = Path(output_video_path)
 
     if not input_path.exists():
-        dprint(f"[REVERSE_VIDEO] Input video not found: {input_path}")
+        generation_logger.debug(f"[REVERSE_VIDEO] Input video not found: {input_path}")
         return None
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,40 +119,36 @@ def reverse_video(
     ]
 
     try:
-        dprint(f"[REVERSE_VIDEO] Reversing video (visually lossless): {input_path.name} -> {output_path.name}")
+        generation_logger.debug(f"[REVERSE_VIDEO] Reversing video (visually lossless): {input_path.name} -> {output_path.name}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)  # Longer timeout for slow preset
 
         if result.returncode != 0:
-            dprint(f"[REVERSE_VIDEO] FFmpeg failed: {result.stderr[:500]}")
+            generation_logger.debug(f"[REVERSE_VIDEO] FFmpeg failed: {result.stderr[:500]}")
             return None
 
         if not output_path.exists() or output_path.stat().st_size == 0:
-            dprint(f"[REVERSE_VIDEO] Output missing or empty: {output_path}")
+            generation_logger.debug(f"[REVERSE_VIDEO] Output missing or empty: {output_path}")
             return None
 
         # Verify the reversed video
         reversed_frames, reversed_fps = get_video_frame_count_and_fps(str(output_path))
         original_frames, _ = get_video_frame_count_and_fps(str(input_path))
 
-        dprint(f"[REVERSE_VIDEO] \u2705 Successfully reversed video: {original_frames} -> {reversed_frames} frames @ {reversed_fps} fps (CRF 17)")
+        generation_logger.debug(f"[REVERSE_VIDEO] \u2705 Successfully reversed video: {original_frames} -> {reversed_frames} frames @ {reversed_fps} fps (CRF 17)")
         return output_path
 
     except subprocess.TimeoutExpired:
-        dprint(f"[REVERSE_VIDEO] FFmpeg timeout")
+        generation_logger.debug(f"[REVERSE_VIDEO] FFmpeg timeout")
         return None
     except (subprocess.SubprocessError, OSError) as e:
-        dprint(f"[REVERSE_VIDEO] Exception: {e}")
-        traceback.print_exc()
+        generation_logger.debug(f"[REVERSE_VIDEO] Exception: {e}", exc_info=True)
         return None
-
 
 def standardize_video_aspect_ratio(
     input_video_path: str | Path,
     output_video_path: str | Path,
     target_aspect_ratio: str,
-    task_id_for_logging: str = "",
-    dprint=print
-) -> Path | None:
+    task_id_for_logging: str = "") -> Path | None:
     """
     Standardize video to target aspect ratio by center-cropping.
 
@@ -173,7 +157,6 @@ def standardize_video_aspect_ratio(
         output_video_path: Path where standardized video will be saved
         target_aspect_ratio: Target aspect ratio as string (e.g., "16:9", "9:16", "1:1")
         task_id_for_logging: Task ID for logging
-        dprint: Print function for logging
 
     Returns:
         Path to standardized video if successful, None otherwise
@@ -185,7 +168,7 @@ def standardize_video_aspect_ratio(
     output_path = Path(output_video_path)
 
     if not input_path.exists():
-        dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Input video not found: {input_path}")
+        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Input video not found: {input_path}")
         return None
 
     # Parse aspect ratio
@@ -196,7 +179,7 @@ def standardize_video_aspect_ratio(
         target_w, target_h = float(ar_parts[0]), float(ar_parts[1])
         target_aspect = target_w / target_h
     except (ValueError, TypeError) as e:
-        dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Failed to parse aspect ratio '{target_aspect_ratio}': {e}")
+        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Failed to parse aspect ratio '{target_aspect_ratio}': {e}")
         return None
 
     # Get input video dimensions using ffprobe
@@ -210,29 +193,29 @@ def standardize_video_aspect_ratio(
         ]
         result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
-            dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: ffprobe failed: {result.stderr}")
+            generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: ffprobe failed: {result.stderr}")
             return None
 
         width_str, height_str = result.stdout.strip().split(',')
         src_w, src_h = int(width_str), int(height_str)
         src_aspect = src_w / src_h
 
-        dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Input video: {src_w}x{src_h} (aspect: {src_aspect:.3f})")
-        dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Target aspect: {target_aspect:.3f}")
+        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Input video: {src_w}x{src_h} (aspect: {src_aspect:.3f})")
+        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Target aspect: {target_aspect:.3f}")
 
     except (subprocess.SubprocessError, OSError, ValueError) as e:
-        dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Failed to get video dimensions: {e}")
+        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Failed to get video dimensions: {e}")
         return None
 
     # Check if aspect ratio is already correct (within 1% tolerance)
     if abs(src_aspect - target_aspect) < 0.01:
-        dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Video already has target aspect ratio, copying...")
+        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Video already has target aspect ratio, copying...")
         try:
             import shutil
             shutil.copy2(input_path, output_path)
             return output_path
         except OSError as e:
-            dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Failed to copy video: {e}")
+            generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Failed to copy video: {e}")
             return None
 
     # Calculate crop dimensions
@@ -249,7 +232,7 @@ def standardize_video_aspect_ratio(
         crop_x = 0
         crop_y = (src_h - new_h) // 2
 
-    dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Center-cropping to {new_w}x{new_h}")
+    generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Center-cropping to {new_w}x{new_h}")
 
     # Apply crop using ffmpeg
     try:
@@ -262,34 +245,30 @@ def standardize_video_aspect_ratio(
 
         result = subprocess.run(crop_cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: ffmpeg crop failed: {result.stderr}")
+            generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: ffmpeg crop failed: {result.stderr}")
             return None
 
         if not output_path.exists() or output_path.stat().st_size == 0:
-            dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Output video not created or empty")
+            generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Output video not created or empty")
             return None
 
-        dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Successfully standardized video to {target_aspect_ratio}")
+        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Successfully standardized video to {target_aspect_ratio}")
         return output_path
 
     except (subprocess.SubprocessError, OSError) as e:
-        dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Failed to crop video: {e}")
+        generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: Failed to crop video: {e}")
         if output_path.exists():
             try:
                 output_path.unlink()
             except OSError as e_cleanup:
-                dprint(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: DEBUG: Failed to clean up output {output_path}: {e_cleanup}")
+                generation_logger.debug(f"[STANDARDIZE_ASPECT] Task {task_id_for_logging}: DEBUG: Failed to clean up output {output_path}: {e_cleanup}")
         return None
 
-
 def add_audio_to_video(
-    video_path: str | Path,
+    input_video_path: str | Path,
     audio_url: str,
-    output_path: str | Path,
-    temp_dir: str | Path,
-    *,
-    dprint=print
-) -> Path | None:
+    output_video_path: str | Path,
+    temp_dir: str | Path) -> Path | None:
     """
     Add audio to a video file, trimming audio to match video duration.
 
@@ -298,30 +277,29 @@ def add_audio_to_video(
     for the duration of the audio (remainder will be silent).
 
     Args:
-        video_path: Path to input video (no audio or audio will be replaced)
+        input_video_path: Path to input video (no audio or audio will be replaced)
         audio_url: URL or local path to audio file (mp3, wav, etc.)
-        output_path: Path for output video with audio
+        output_video_path: Path for output video with audio
         temp_dir: Directory for temporary files (audio download)
-        dprint: Logging function
 
     Returns:
         Path to output video with audio, or None if failed
     """
-    video_path = Path(video_path)
-    output_path = Path(output_path)
+    input_video_path = Path(input_video_path)
+    output_video_path = Path(output_video_path)
     temp_dir = Path(temp_dir)
 
-    if not video_path.exists():
-        dprint(f"[ADD_AUDIO] Input video does not exist: {video_path}")
+    if not input_video_path.exists():
+        generation_logger.debug(f"[ADD_AUDIO] Input video does not exist: {input_video_path}")
         return None
 
     if not audio_url:
-        dprint(f"[ADD_AUDIO] No audio URL provided")
+        generation_logger.debug(f"[ADD_AUDIO] No audio URL provided")
         return None
 
-    dprint(f"[ADD_AUDIO] Adding audio to video")
-    dprint(f"[ADD_AUDIO]   Video: {video_path}")
-    dprint(f"[ADD_AUDIO]   Audio: {audio_url[:80]}...")
+    generation_logger.debug(f"[ADD_AUDIO] Adding audio to video")
+    generation_logger.debug(f"[ADD_AUDIO]   Video: {input_video_path}")
+    generation_logger.debug(f"[ADD_AUDIO]   Audio: {audio_url[:80]}...")
 
     try:
         # Download audio if it's a URL
@@ -340,7 +318,7 @@ def add_audio_to_video(
             audio_filename = f"temp_audio_{uuid.uuid4().hex[:8]}{audio_ext}"
             local_audio_path = temp_dir / audio_filename
 
-            dprint(f"[ADD_AUDIO] Downloading audio to {local_audio_path}...")
+            generation_logger.debug(f"[ADD_AUDIO] Downloading audio to {local_audio_path}...")
 
             response = requests.get(audio_url, stream=True, timeout=60)
             response.raise_for_status()
@@ -349,11 +327,11 @@ def add_audio_to_video(
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-            dprint(f"[ADD_AUDIO] Audio downloaded: {local_audio_path.stat().st_size} bytes")
+            generation_logger.debug(f"[ADD_AUDIO] Audio downloaded: {local_audio_path.stat().st_size} bytes")
         else:
             local_audio_path = Path(audio_url)
             if not local_audio_path.exists():
-                dprint(f"[ADD_AUDIO] Local audio file does not exist: {audio_url}")
+                generation_logger.debug(f"[ADD_AUDIO] Local audio file does not exist: {audio_url}")
                 return None
 
         # Get video duration for logging
@@ -362,25 +340,25 @@ def add_audio_to_video(
                 'ffprobe', '-v', 'error',
                 '-show_entries', 'format=duration',
                 '-of', 'default=noprint_wrappers=1:nokey=1',
-                str(video_path)
+                str(input_video_path)
             ]
             result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
             video_duration = float(result.stdout.strip()) if result.returncode == 0 else None
             if video_duration:
-                dprint(f"[ADD_AUDIO] Video duration: {video_duration:.2f}s")
+                generation_logger.debug(f"[ADD_AUDIO] Video duration: {video_duration:.2f}s")
         except (subprocess.SubprocessError, OSError, ValueError) as e:
-            dprint(f"[ADD_AUDIO] DEBUG: Failed to probe video duration: {e}")
+            generation_logger.debug(f"[ADD_AUDIO] DEBUG: Failed to probe video duration: {e}")
             video_duration = None
 
         # Mux video with audio using FFmpeg
         # -shortest: Stop when shortest stream ends (trims audio to video length)
         # -c:v copy: Don't re-encode video (fast)
         # -c:a aac: Encode audio to AAC for compatibility
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_video_path.parent.mkdir(parents=True, exist_ok=True)
 
         ffmpeg_cmd = [
             'ffmpeg', '-y',
-            '-i', str(video_path),
+            '-i', str(input_video_path),
             '-i', str(local_audio_path),
             '-c:v', 'copy',           # Copy video stream (no re-encoding)
             '-c:a', 'aac',            # Encode audio to AAC
@@ -388,18 +366,18 @@ def add_audio_to_video(
             '-shortest',              # Trim to shortest stream (video)
             '-map', '0:v:0',          # Take video from first input
             '-map', '1:a:0',          # Take audio from second input
-            str(output_path)
+            str(output_video_path)
         ]
 
-        dprint(f"[ADD_AUDIO] Running FFmpeg to mux audio...")
+        generation_logger.debug(f"[ADD_AUDIO] Running FFmpeg to mux audio...")
         result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=300)
 
         if result.returncode != 0:
-            dprint(f"[ADD_AUDIO] FFmpeg failed: {result.stderr[:500] if result.stderr else 'No error message'}")
+            generation_logger.debug(f"[ADD_AUDIO] FFmpeg failed: {result.stderr[:500] if result.stderr else 'No error message'}")
             return None
 
-        if not output_path.exists() or output_path.stat().st_size == 0:
-            dprint(f"[ADD_AUDIO] Output file not created or empty")
+        if not output_video_path.exists() or output_video_path.stat().st_size == 0:
+            generation_logger.debug(f"[ADD_AUDIO] Output file not created or empty")
             return None
 
         # Clean up downloaded audio if we downloaded it
@@ -407,32 +385,27 @@ def add_audio_to_video(
             try:
                 local_audio_path.unlink()
             except OSError as e:
-                dprint(f"[ADD_AUDIO] DEBUG: Failed to clean up downloaded audio file {local_audio_path}: {e}")
+                generation_logger.debug(f"[ADD_AUDIO] DEBUG: Failed to clean up downloaded audio file {local_audio_path}: {e}")
 
-        dprint(f"[ADD_AUDIO] \u2705 Successfully added audio to video: {output_path}")
-        dprint(f"[ADD_AUDIO]   Output size: {output_path.stat().st_size} bytes")
+        generation_logger.debug(f"[ADD_AUDIO] Successfully added audio to video: {output_video_path}")
+        generation_logger.debug(f"[ADD_AUDIO]   Output size: {output_video_path.stat().st_size} bytes")
 
-        return output_path
+        return output_video_path
 
     except (subprocess.SubprocessError, OSError) as e:
-        dprint(f"[ADD_AUDIO] Error adding audio: {e}")
-        traceback.print_exc()
-        if output_path.exists():
+        generation_logger.debug(f"[ADD_AUDIO] Error adding audio: {e}", exc_info=True)
+        if output_video_path.exists():
             try:
-                output_path.unlink()
+                output_video_path.unlink()
             except OSError as e_cleanup:
-                dprint(f"[ADD_AUDIO] DEBUG: Failed to clean up output file {output_path}: {e_cleanup}")
+                generation_logger.debug(f"[ADD_AUDIO] DEBUG: Failed to clean up output file {output_video_path}: {e_cleanup}")
         return None
-
 
 def overlay_start_end_images_above_video(
     start_image_path: str | Path,
     end_image_path: str | Path,
     input_video_path: str | Path,
-    output_video_path: str | Path,
-    *,
-    dprint=print,
-) -> bool:
+    output_video_path: str | Path) -> bool:
     """Creates a composite video that shows *start_image* (left) and *end_image* (right)
     on a row above the *input_video*.
 
@@ -451,7 +424,6 @@ def overlay_start_end_images_above_video(
         end_image_path:   Path to the ending image.
         input_video_path: Source video that was generated.
         output_video_path: Desired path for the composite video.
-        dprint: Debug print function.
 
     Returns:
         True if the composite video was created successfully, else False.
@@ -463,7 +435,7 @@ def overlay_start_end_images_above_video(
         output_video_path = Path(output_video_path)
 
         if not (start_image_path.exists() and end_image_path.exists() and input_video_path.exists()):
-            dprint(
+            generation_logger.debug(
                 f"overlay_start_end_images_above_video: One or more input paths are missing.\n"
                 f"  start_image_path = {start_image_path}\n"
                 f"  end_image_path   = {end_image_path}\n"
@@ -499,17 +471,16 @@ def overlay_start_end_images_above_video(
                     codec="libx264",
                     audio=False,
                     fps=video_clip.fps or fps,
-                    preset="veryfast",
-                )
+                    preset="veryfast")
 
                 video_clip.close(); img1_clip.close(); img2_clip.close(); composite.close()
 
                 if output_video_path.exists() and output_video_path.stat().st_size > 0:
                     return True
                 else:
-                    dprint("overlay_start_end_images_above_video: MoviePy output missing after write.")
+                    generation_logger.debug("overlay_start_end_images_above_video: MoviePy output missing after write.")
             except (OSError, ValueError, RuntimeError) as e_mov:
-                dprint(f"overlay_start_end_images_above_video: MoviePy path failed \u2013 {e_mov}. Falling back to ffmpeg.")
+                generation_logger.debug(f"overlay_start_end_images_above_video: MoviePy path failed \u2013 {e_mov}. Falling back to ffmpeg.")
 
         # ---------------------------------------------------------
         #   Fallback: FFmpeg filter_complex (no MoviePy or MoviePy failed)
@@ -521,14 +492,14 @@ def overlay_start_end_images_above_video(
                 # ---------------------------------------------------------
                 cap = cv2.VideoCapture(str(input_video_path))
                 if not cap.isOpened():
-                    dprint(f"overlay_start_end_images_above_video: Could not open video {input_video_path}")
+                    generation_logger.debug(f"overlay_start_end_images_above_video: Could not open video {input_video_path}")
                     return False
                 video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 cap.release()
 
                 if video_width == 0 or video_height == 0:
-                    dprint(
+                    generation_logger.debug(
                         f"overlay_start_end_images_above_video: Failed to read resolution from {input_video_path}"
                     )
                     return False
@@ -565,7 +536,7 @@ def overlay_start_end_images_above_video(
                         fps = cap2.get(cv2.CAP_PROP_FPS)
                     cap2.release()
                 except (OSError, ValueError, RuntimeError) as e:
-                    dprint(f"overlay_start_end_images_above_video: DEBUG: Failed to read FPS from {input_video_path}: {e}")
+                    generation_logger.debug(f"overlay_start_end_images_above_video: DEBUG: Failed to read FPS from {input_video_path}: {e}")
                     fps = 0.0
                 if fps is None or fps <= 0.1:
                     fps = 16  # sensible default
@@ -585,11 +556,11 @@ def overlay_start_end_images_above_video(
                     str(output_video_path.resolve()),
                 ]
 
-                dprint(f"overlay_start_end_images_above_video: Running ffmpeg to create composite video.\nCommand: {' '.join(ffmpeg_cmd)}")
+                generation_logger.debug(f"overlay_start_end_images_above_video: Running ffmpeg to create composite video.\nCommand: {' '.join(ffmpeg_cmd)}")
 
-                proc = subprocess.run(ffmpeg_cmd, capture_output=True)
+                proc = subprocess.run(ffmpeg_cmd, capture_output=True, timeout=600)
                 if proc.returncode != 0:
-                    dprint(
+                    generation_logger.debug(
                         f"overlay_start_end_images_above_video: ffmpeg failed (returncode={proc.returncode}).\n"
                         f"stderr: {proc.stderr.decode(errors='ignore')[:500]}"
                     )
@@ -598,11 +569,11 @@ def overlay_start_end_images_above_video(
                         try:
                             output_video_path.unlink()
                         except OSError as e_cleanup:
-                            dprint(f"overlay_start_end_images_above_video: DEBUG: Failed to clean up partial output {output_video_path}: {e_cleanup}")
+                            generation_logger.debug(f"overlay_start_end_images_above_video: DEBUG: Failed to clean up partial output {output_video_path}: {e_cleanup}")
                     return False
 
                 if not output_video_path.exists() or output_video_path.stat().st_size == 0:
-                    dprint(
+                    generation_logger.debug(
                         f"overlay_start_end_images_above_video: Output video not created or empty at {output_video_path}"
                     )
                     return False
@@ -610,15 +581,14 @@ def overlay_start_end_images_above_video(
                 return True
 
             except (subprocess.SubprocessError, OSError) as e_ffmpeg:
-                dprint(f"overlay_start_end_images_above_video: ffmpeg failed \u2013 {e_ffmpeg}. Falling back to MoviePy.")
+                generation_logger.debug(f"overlay_start_end_images_above_video: ffmpeg failed \u2013 {e_ffmpeg}. Falling back to MoviePy.")
                 return False
 
     except (subprocess.SubprocessError, OSError, ValueError, RuntimeError) as e_ov:
-        dprint(f"overlay_start_end_images_above_video: Exception \u2013 {e_ov}")
-        traceback.print_exc()
+        generation_logger.debug(f"overlay_start_end_images_above_video: Exception \u2013 {e_ov}", exc_info=True)
         try:
             if output_video_path and output_video_path.exists():
                 output_video_path.unlink()
         except OSError as e_cleanup:
-            dprint(f"overlay_start_end_images_above_video: DEBUG: Failed to clean up output {output_video_path}: {e_cleanup}")
+            generation_logger.debug(f"overlay_start_end_images_above_video: DEBUG: Failed to clean up output {output_video_path}: {e_cleanup}")
         return False

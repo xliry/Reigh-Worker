@@ -4,6 +4,16 @@ from typing import Optional
 
 from source.core.log.core import essential, debug, success, error
 
+__all__ = [
+    "log_task_start",
+    "log_task_complete",
+    "log_task_error",
+    "log_model_switch",
+    "log_file_operation",
+    "log_ffmpeg_command",
+    "log_generation_params",
+]
+
 
 # Utility functions for common log patterns
 def log_task_start(component: str, task_id: str, task_type: str, **params):

@@ -6,7 +6,6 @@ context-aware transition prompts.
 """
 
 import sys
-import traceback
 from pathlib import Path
 from typing import Tuple, List, Optional
 
@@ -15,6 +14,7 @@ import cv2
 from source.utils import download_video_if_url
 from source.media.video import extract_frames_from_video
 from source.core.constants import BYTES_PER_GB
+from source.core.log import orchestrator_logger
 
 __all__ = [
     "_extract_boundary_frames_for_vlm",
@@ -22,13 +22,10 @@ __all__ = [
     "_generate_vlm_prompts_for_joins",
 ]
 
-
 def _extract_boundary_frames_for_vlm(
     clip_list: List[dict],
     temp_dir: Path,
-    orchestrator_task_id: str,
-    dprint
-) -> List[Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]]:
+    orchestrator_task_id: str) -> List[Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]]:
     """
     Extract boundary frames from clips for VLM prompt generation.
 
@@ -42,7 +39,6 @@ def _extract_boundary_frames_for_vlm(
         clip_list: List of clip dicts with 'url' keys
         temp_dir: Directory to save temporary frame images
         orchestrator_task_id: Task ID for logging
-        dprint: Debug print function
 
     Returns:
         List of (start_first, start_boundary, end_boundary, end_last) tuples for each join
@@ -61,7 +57,7 @@ def _extract_boundary_frames_for_vlm(
         end_url = clip_end.get("url")
 
         if not start_url or not end_url:
-            dprint(f"[VLM_EXTRACT] Join {idx}: Missing URL, skipping")
+            orchestrator_logger.debug(f"[VLM_EXTRACT] Join {idx}: Missing URL, skipping")
             image_quads.append((None, None, None, None))
             continue
 
@@ -70,7 +66,7 @@ def _extract_boundary_frames_for_vlm(
             if start_url in clip_data_cache:
                 start_frames, start_first_path, start_last_path = clip_data_cache[start_url]
             else:
-                dprint(f"[VLM_EXTRACT] Join {idx}: Downloading clip_start: {start_url[:80]}...")
+                orchestrator_logger.debug(f"[VLM_EXTRACT] Join {idx}: Downloading clip_start: {start_url[:80]}...")
                 local_start_path = download_video_if_url(
                     start_url,
                     download_target_dir=temp_dir,
@@ -78,9 +74,9 @@ def _extract_boundary_frames_for_vlm(
                     descriptive_name=f"clip_{idx}_start"
                 )
 
-                start_frames = extract_frames_from_video(local_start_path, dprint_func=dprint)
+                start_frames = extract_frames_from_video(local_start_path)
                 if not start_frames:
-                    dprint(f"[VLM_EXTRACT] Join {idx}: Failed to extract frames from start clip")
+                    orchestrator_logger.debug(f"[VLM_EXTRACT] Join {idx}: Failed to extract frames from start clip")
                     image_quads.append((None, None, None, None))
                     continue
 
@@ -90,7 +86,7 @@ def _extract_boundary_frames_for_vlm(
                 cv2.imwrite(str(start_last_path), cv2.cvtColor(start_frames[-1], cv2.COLOR_RGB2BGR))
 
                 clip_data_cache[start_url] = (start_frames, str(start_first_path), str(start_last_path))
-                dprint(f"[VLM_EXTRACT] Join {idx}: Extracted {len(start_frames)} frames from start clip")
+                orchestrator_logger.debug(f"[VLM_EXTRACT] Join {idx}: Extracted {len(start_frames)} frames from start clip")
 
             start_boundary_idx = len(start_frames) - 1
             start_boundary_path = temp_dir / f"vlm_clip{idx}_boundary.jpg"
@@ -100,7 +96,7 @@ def _extract_boundary_frames_for_vlm(
             if end_url in clip_data_cache:
                 end_frames, end_first_path, end_last_path = clip_data_cache[end_url]
             else:
-                dprint(f"[VLM_EXTRACT] Join {idx}: Downloading clip_end: {end_url[:80]}...")
+                orchestrator_logger.debug(f"[VLM_EXTRACT] Join {idx}: Downloading clip_end: {end_url[:80]}...")
                 local_end_path = download_video_if_url(
                     end_url,
                     download_target_dir=temp_dir,
@@ -108,9 +104,9 @@ def _extract_boundary_frames_for_vlm(
                     descriptive_name=f"clip_{idx+1}_end"
                 )
 
-                end_frames = extract_frames_from_video(local_end_path, dprint_func=dprint)
+                end_frames = extract_frames_from_video(local_end_path)
                 if not end_frames:
-                    dprint(f"[VLM_EXTRACT] Join {idx}: Failed to extract frames from end clip")
+                    orchestrator_logger.debug(f"[VLM_EXTRACT] Join {idx}: Failed to extract frames from end clip")
                     image_quads.append((None, None, None, None))
                     continue
 
@@ -120,7 +116,7 @@ def _extract_boundary_frames_for_vlm(
                 cv2.imwrite(str(end_last_path), cv2.cvtColor(end_frames[-1], cv2.COLOR_RGB2BGR))
 
                 clip_data_cache[end_url] = (end_frames, str(end_first_path), str(end_last_path))
-                dprint(f"[VLM_EXTRACT] Join {idx}: Extracted {len(end_frames)} frames from end clip")
+                orchestrator_logger.debug(f"[VLM_EXTRACT] Join {idx}: Extracted {len(end_frames)} frames from end clip")
 
             end_boundary_idx = 0
             end_boundary_path = temp_dir / f"vlm_clip{idx+1}_boundary.jpg"
@@ -132,14 +128,13 @@ def _extract_boundary_frames_for_vlm(
                 str(end_boundary_path),
                 str(clip_data_cache[end_url][2])
             ))
-            dprint(f"[VLM_EXTRACT] Join {idx}: 4 frames ready (first, boundary, boundary, last)")
+            orchestrator_logger.debug(f"[VLM_EXTRACT] Join {idx}: 4 frames ready (first, boundary, boundary, last)")
 
         except (OSError, ValueError, RuntimeError) as e:
-            dprint(f"[VLM_EXTRACT] Join {idx}: ERROR extracting frames: {e}")
+            orchestrator_logger.debug(f"[VLM_EXTRACT] Join {idx}: ERROR extracting frames: {e}")
             image_quads.append((None, None, None, None))
 
     return image_quads
-
 
 def _generate_join_transition_prompt(
     start_first_path: str,
@@ -147,9 +142,7 @@ def _generate_join_transition_prompt(
     end_boundary_path: str,
     end_last_path: str,
     base_prompt: str,
-    extender,
-    dprint
-) -> str:
+    extender) -> str:
     """
     Generate a single transition prompt for join_clips using 4 boundary images.
 
@@ -160,7 +153,6 @@ def _generate_join_transition_prompt(
         end_last_path: Path to last frame of ending clip
         base_prompt: Base prompt for context
         extender: QwenPromptExpander instance
-        dprint: Debug print function
 
     Returns:
         Generated prompt
@@ -213,13 +205,10 @@ Your prompt:"""
 
     return result.prompt.strip()
 
-
 def _generate_vlm_prompts_for_joins(
     image_quads: List[Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]],
     base_prompt: str,
-    vlm_device: str,
-    dprint
-) -> List[Optional[str]]:
+    vlm_device: str) -> List[Optional[str]]:
     """
     Generate VLM-enhanced prompts for ALL joins using 4-image quads.
 
@@ -227,7 +216,6 @@ def _generate_vlm_prompts_for_joins(
         image_quads: List of (start_first, start_boundary, end_boundary, end_last) tuples
         base_prompt: Base prompt to use as VLM context
         vlm_device: Device for VLM inference ('cuda' or 'cpu')
-        dprint: Debug print function
 
     Returns:
         List of enhanced prompts (None for joins with missing image quads)
@@ -246,14 +234,14 @@ def _generate_vlm_prompts_for_joins(
             valid_quads.append(quad)
             valid_indices.append(idx)
         else:
-            dprint(f"[VLM_PROMPTS] Join {idx}: Skipping - missing image(s) in quad")
+            orchestrator_logger.debug(f"[VLM_PROMPTS] Join {idx}: Skipping - missing image(s) in quad")
 
     if not valid_quads:
-        dprint(f"[VLM_PROMPTS] No valid image quads for VLM processing")
+        orchestrator_logger.debug(f"[VLM_PROMPTS] No valid image quads for VLM processing")
         return result
 
-    dprint(f"[VLM_PROMPTS] Processing {len(valid_quads)}/{num_joins} joins with VLM (4 images each)")
-    dprint(f"[VLM_PROMPTS] Base prompt context: '{base_prompt[:80]}...'" if base_prompt else "[VLM_PROMPTS] No base prompt (VLM will infer from frames)")
+    orchestrator_logger.debug(f"[VLM_PROMPTS] Processing {len(valid_quads)}/{num_joins} joins with VLM (4 images each)")
+    orchestrator_logger.debug(f"[VLM_PROMPTS] Base prompt context: '{base_prompt[:80]}...'" if base_prompt else "[VLM_PROMPTS] No base prompt (VLM will infer from frames)")
 
     try:
         # Add Wan2GP to path for imports
@@ -262,29 +250,29 @@ def _generate_vlm_prompts_for_joins(
             sys.path.insert(0, str(wan_dir))
 
         from Wan2GP.shared.utils.prompt_extend import QwenPromptExpander
-        from source.media.vlm import download_qwen_vlm_if_needed
+        from source.media.vlm.model import download_qwen_vlm_if_needed
 
         if torch.cuda.is_available():
             gpu_mem_before = torch.cuda.memory_allocated() / BYTES_PER_GB
-            dprint(f"[VLM_PROMPTS] GPU memory BEFORE VLM load: {gpu_mem_before:.2f} GB")
+            orchestrator_logger.debug(f"[VLM_PROMPTS] GPU memory BEFORE VLM load: {gpu_mem_before:.2f} GB")
 
         local_model_path = wan_dir / "ckpts" / "Qwen2.5-VL-7B-Instruct"
-        dprint(f"[VLM_PROMPTS] Checking for model at {local_model_path}...")
+        orchestrator_logger.debug(f"[VLM_PROMPTS] Checking for model at {local_model_path}...")
         download_qwen_vlm_if_needed(local_model_path)
 
-        dprint(f"[VLM_PROMPTS] Initializing Qwen2.5-VL-7B-Instruct...")
+        orchestrator_logger.debug(f"[VLM_PROMPTS] Initializing Qwen2.5-VL-7B-Instruct...")
         extender = QwenPromptExpander(
             model_name=str(local_model_path),
             device=vlm_device,
             is_vl=True
         )
-        dprint(f"[VLM_PROMPTS] Model loaded (initially on CPU, moves to {vlm_device} for inference)")
+        orchestrator_logger.debug(f"[VLM_PROMPTS] Model loaded (initially on CPU, moves to {vlm_device} for inference)")
 
         for i, quad in enumerate(valid_quads):
             idx = valid_indices[i]
             start_first, start_boundary, end_boundary, end_last = quad
             try:
-                dprint(f"[VLM_PROMPTS] Processing join {idx} ({i+1}/{len(valid_quads)})...")
+                orchestrator_logger.debug(f"[VLM_PROMPTS] Processing join {idx} ({i+1}/{len(valid_quads)})...")
 
                 enhanced = _generate_join_transition_prompt(
                     start_first_path=start_first,
@@ -292,45 +280,42 @@ def _generate_vlm_prompts_for_joins(
                     end_boundary_path=end_boundary,
                     end_last_path=end_last,
                     base_prompt=base_prompt,
-                    extender=extender,
-                    dprint=dprint
-                )
+                    extender=extender)
 
                 result[idx] = enhanced
-                dprint(f"[VLM_PROMPTS] Join {idx}: {enhanced[:100]}...")
+                orchestrator_logger.debug(f"[VLM_PROMPTS] Join {idx}: {enhanced[:100]}...")
 
             except (RuntimeError, ValueError, OSError) as e:
-                dprint(f"[VLM_PROMPTS] Join {idx}: ERROR - {e}")
+                orchestrator_logger.debug(f"[VLM_PROMPTS] Join {idx}: ERROR - {e}")
 
         # Cleanup VLM
         if torch.cuda.is_available():
             gpu_mem_before_cleanup = torch.cuda.memory_allocated() / BYTES_PER_GB
-            dprint(f"[VLM_CLEANUP] GPU memory BEFORE cleanup: {gpu_mem_before_cleanup:.2f} GB")
+            orchestrator_logger.debug(f"[VLM_CLEANUP] GPU memory BEFORE cleanup: {gpu_mem_before_cleanup:.2f} GB")
 
-        dprint(f"[VLM_CLEANUP] Cleaning up VLM model and processor...")
+        orchestrator_logger.debug(f"[VLM_CLEANUP] Cleaning up VLM model and processor...")
         try:
             del extender.model
             del extender.processor
             del extender
-            dprint(f"[VLM_CLEANUP] \u2705 Successfully deleted VLM objects")
+            orchestrator_logger.debug(f"[VLM_CLEANUP] \u2705 Successfully deleted VLM objects")
         except (RuntimeError, AttributeError) as e:
-            dprint(f"[VLM_CLEANUP] \u26a0\ufe0f  Error during deletion: {e}")
+            orchestrator_logger.debug(f"[VLM_CLEANUP] \u26a0\ufe0f  Error during deletion: {e}")
 
         import gc
         collected = gc.collect()
-        dprint(f"[VLM_CLEANUP] Garbage collected {collected} objects")
+        orchestrator_logger.debug(f"[VLM_CLEANUP] Garbage collected {collected} objects")
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             gpu_mem_after = torch.cuda.memory_allocated() / BYTES_PER_GB
             gpu_freed = gpu_mem_before_cleanup - gpu_mem_after
-            dprint(f"[VLM_CLEANUP] GPU memory AFTER cleanup: {gpu_mem_after:.2f} GB")
-            dprint(f"[VLM_CLEANUP] GPU memory freed: {gpu_freed:.2f} GB")
+            orchestrator_logger.debug(f"[VLM_CLEANUP] GPU memory AFTER cleanup: {gpu_mem_after:.2f} GB")
+            orchestrator_logger.debug(f"[VLM_CLEANUP] GPU memory freed: {gpu_freed:.2f} GB")
 
-        dprint(f"[VLM_CLEANUP] \u2705 VLM cleanup complete")
+        orchestrator_logger.debug(f"[VLM_CLEANUP] \u2705 VLM cleanup complete")
         return result
 
     except (RuntimeError, ValueError, OSError, ImportError) as e:
-        dprint(f"[VLM_PROMPTS] ERROR in VLM processing: {e}")
-        traceback.print_exc()
+        orchestrator_logger.debug(f"[VLM_PROMPTS] ERROR in VLM processing: {e}", exc_info=True)
         return result

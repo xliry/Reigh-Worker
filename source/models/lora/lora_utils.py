@@ -13,17 +13,16 @@ from pathlib import Path
 from urllib.request import urlretrieve
 from urllib.parse import unquote
 
-from source.core.log import headless_logger
+from source.core.log import model_logger
 
 
-def _download_lora_from_url(url: str, task_id: str, dprint=None, model_type: str = None) -> str:
+def _download_lora_from_url(url: str, task_id: str, model_type: str = None) -> str:
     """
     Download a LoRA from URL to appropriate local directory.
 
     Args:
         url: LoRA download URL
         task_id: Task ID for logging
-        dprint: Optional debug print function
         model_type: Model type to determine correct LoRA directory (e.g., "wan_2_2_vace_lightning_baseline_2_2_2")
 
     Returns:
@@ -52,8 +51,7 @@ def _download_lora_from_url(url: str, task_id: str, dprint=None, model_type: str
 
     # If we derived a unique filename (collision detected), clean up old generic file
     if local_filename != generic_filename:
-        if dprint:
-            dprint(f"[LORA_DOWNLOAD] Task {task_id}: Collision-prone LoRA detected: {generic_filename} → {local_filename}")
+        model_logger.debug(f"[LORA_DOWNLOAD] Task {task_id}: Collision-prone LoRA detected: {generic_filename} -> {local_filename}", task_id=task_id)
 
         # Check ALL standard lora directories (using centralized paths)
         from source.models.lora.lora_paths import get_lora_search_dirs
@@ -63,30 +61,25 @@ def _download_lora_from_url(url: str, task_id: str, dprint=None, model_type: str
             if search_dir.is_dir():
                 old_path = search_dir / generic_filename
                 if old_path.is_file():
-                    if dprint:
-                        dprint(f"[LORA_DOWNLOAD] Task {task_id}: 🗑️  Removing legacy LoRA file: {old_path}")
+                    model_logger.debug(f"[LORA_DOWNLOAD] Task {task_id}: Removing legacy LoRA file: {old_path}", task_id=task_id)
                     try:
                         old_path.unlink()
-                        if dprint:
-                            dprint(f"[LORA_DOWNLOAD] Task {task_id}: ✅ Successfully deleted legacy file")
+                        model_logger.debug(f"[LORA_DOWNLOAD] Task {task_id}: Successfully deleted legacy file", task_id=task_id)
                     except OSError as e:
-                        if dprint:
-                            dprint(f"[LORA_DOWNLOAD] Task {task_id}: ⚠️  Failed to delete old LoRA {old_path}: {e}")
+                        model_logger.warning(f"[LORA_DOWNLOAD] Task {task_id}: Failed to delete old LoRA {old_path}: {e}", task_id=task_id)
 
     # Determine LoRA directory based on model type (centralized in lora_paths.py)
     from source.models.lora.lora_paths import get_lora_dir_for_model
     lora_dir = get_lora_dir_for_model(model_type, wan_dir)
 
     local_path = lora_dir / local_filename
-    
-    if dprint:
-        dprint(f"[LORA_DOWNLOAD] Task {task_id}: Downloading {local_filename} to {lora_dir} from {url}")
+
+    model_logger.debug(f"[LORA_DOWNLOAD] Task {task_id}: Downloading {local_filename} to {lora_dir} from {url}", task_id=task_id)
 
     # Normalize HuggingFace URLs: convert /blob/ to /resolve/ for direct downloads
     if "huggingface.co/" in url and "/blob/" in url:
         url = url.replace("/blob/", "/resolve/")
-        if dprint:
-            dprint(f"[LORA_DOWNLOAD] Task {task_id}: Normalized HuggingFace URL from /blob/ to /resolve/")
+        model_logger.debug(f"[LORA_DOWNLOAD] Task {task_id}: Normalized HuggingFace URL from /blob/ to /resolve/", task_id=task_id)
 
     # Check if file already exists
     if not local_path.is_file():
@@ -127,7 +120,7 @@ def _download_lora_from_url(url: str, task_id: str, dprint=None, model_type: str
                                     cur.rmdir()
                                 cur = cur.parent
                         except OSError as e_rmdir:
-                            headless_logger.debug(f"Could not remove empty LoRA subfolder during cleanup: {e_rmdir}")
+                            model_logger.debug(f"Could not remove empty LoRA subfolder during cleanup: {e_rmdir}")
                     except OSError:
                         # If move fails, leave as-is; higher-level checks may still find it
                         pass
@@ -138,11 +131,9 @@ def _download_lora_from_url(url: str, task_id: str, dprint=None, model_type: str
             lora_dir.mkdir(parents=True, exist_ok=True)
             urlretrieve(url, str(local_path))
         
-        if dprint:
-            dprint(f"[LORA_DOWNLOAD] Task {task_id}: Successfully downloaded {local_filename}")
+        model_logger.debug(f"[LORA_DOWNLOAD] Task {task_id}: Successfully downloaded {local_filename}", task_id=task_id)
     else:
-        if dprint:
-            dprint(f"[LORA_DOWNLOAD] Task {task_id}: {local_filename} already exists")
+        model_logger.debug(f"[LORA_DOWNLOAD] Task {task_id}: {local_filename} already exists", task_id=task_id)
     
     return local_filename
 
@@ -196,11 +187,11 @@ def cleanup_legacy_lora_collisions():
                 try:
                     file_path.unlink()
                     cleaned_files.append(str(file_path))
-                    headless_logger.info(f"🗑️  Removed legacy LoRA file: {file_path}")
+                    model_logger.info(f"🗑️  Removed legacy LoRA file: {file_path}")
                 except OSError as e:
-                    headless_logger.warning(f"⚠️  Failed to remove legacy LoRA {file_path}: {e}")
+                    model_logger.warning(f"⚠️  Failed to remove legacy LoRA {file_path}: {e}")
     
     if cleaned_files:
-        headless_logger.info(f"✅ Cleanup complete: removed {len(cleaned_files)} legacy LoRA file(s)")
+        model_logger.info(f"✅ Cleanup complete: removed {len(cleaned_files)} legacy LoRA file(s)")
     else:
-        headless_logger.debug("No legacy LoRA files found to clean up")
+        model_logger.debug("No legacy LoRA files found to clean up")

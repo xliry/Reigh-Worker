@@ -8,14 +8,10 @@ Or run directly for visual output:
     python tests/test_multi_structure_video.py
 """
 
-import sys
 import tempfile
 from pathlib import Path
 import numpy as np
 import pytest
-
-# Add source to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from source.media.structure import (
     create_neutral_frame,
@@ -24,8 +20,7 @@ from source.media.structure import (
     load_structure_video_frames_with_range,
     calculate_segment_stitched_position,
     extract_segment_structure_guidance,
-    segment_has_structure_overlap,
-)
+    segment_has_structure_overlap)
 
 
 # =============================================================================
@@ -141,13 +136,13 @@ class TestValidateStructureVideoConfigs:
     
     def test_empty_configs(self):
         """Empty config list should return empty."""
-        result = validate_structure_video_configs([], 100, print)
+        result = validate_structure_video_configs([], 100)
         assert result == []
     
     def test_valid_single_config(self):
         """Single valid config should pass."""
         configs = [{"path": "/test.mp4", "start_frame": 0, "end_frame": 50}]
-        result = validate_structure_video_configs(configs, 100, print)
+        result = validate_structure_video_configs(configs, 100)
         assert len(result) == 1
     
     def test_valid_multiple_configs(self):
@@ -156,7 +151,7 @@ class TestValidateStructureVideoConfigs:
             {"path": "/a.mp4", "start_frame": 0, "end_frame": 30},
             {"path": "/b.mp4", "start_frame": 50, "end_frame": 80},
         ]
-        result = validate_structure_video_configs(configs, 100, print)
+        result = validate_structure_video_configs(configs, 100)
         assert len(result) == 2
     
     def test_configs_sorted_by_start(self):
@@ -165,7 +160,7 @@ class TestValidateStructureVideoConfigs:
             {"path": "/b.mp4", "start_frame": 50, "end_frame": 80},
             {"path": "/a.mp4", "start_frame": 0, "end_frame": 30},
         ]
-        result = validate_structure_video_configs(configs, 100, print)
+        result = validate_structure_video_configs(configs, 100)
         assert result[0]["start_frame"] == 0
         assert result[1]["start_frame"] == 50
     
@@ -173,13 +168,13 @@ class TestValidateStructureVideoConfigs:
         """Missing 'path' should raise ValueError."""
         configs = [{"start_frame": 0, "end_frame": 50}]
         with pytest.raises(ValueError, match="missing 'path'"):
-            validate_structure_video_configs(configs, 100, print)
+            validate_structure_video_configs(configs, 100)
     
     def test_missing_start_frame_raises(self):
         """Missing 'start_frame' should raise ValueError."""
         configs = [{"path": "/test.mp4", "end_frame": 50}]
         with pytest.raises(ValueError, match="missing 'start_frame'"):
-            validate_structure_video_configs(configs, 100, print)
+            validate_structure_video_configs(configs, 100)
     
     def test_overlapping_configs_raises(self):
         """Overlapping frame ranges should raise ValueError."""
@@ -188,12 +183,12 @@ class TestValidateStructureVideoConfigs:
             {"path": "/b.mp4", "start_frame": 40, "end_frame": 80},  # Overlaps!
         ]
         with pytest.raises(ValueError, match="overlaps"):
-            validate_structure_video_configs(configs, 100, print)
+            validate_structure_video_configs(configs, 100)
     
     def test_out_of_bounds_clips(self):
         """Frame range exceeding total_frames should be clipped."""
         configs = [{"path": "/test.mp4", "start_frame": 0, "end_frame": 150}]
-        result = validate_structure_video_configs(configs, 100, print)
+        result = validate_structure_video_configs(configs, 100)
         # end_frame should be clipped to total_frames
         assert result[0]["end_frame"] == 100
     
@@ -201,7 +196,7 @@ class TestValidateStructureVideoConfigs:
         """start_frame >= end_frame should raise."""
         configs = [{"path": "/test.mp4", "start_frame": 50, "end_frame": 30}]
         with pytest.raises(ValueError, match="start_frame.*>= end_frame"):
-            validate_structure_video_configs(configs, 100, print)
+            validate_structure_video_configs(configs, 100)
 
 
 # =============================================================================
@@ -231,9 +226,7 @@ class TestCompositeGuidanceVideo:
             target_resolution=(128, 128),
             target_fps=16,
             output_path=output_path,
-            download_dir=temp_output_dir,
-            dprint=print
-        )
+            download_dir=temp_output_dir)
         
         assert result.exists()
         assert result.stat().st_size > 0
@@ -259,9 +252,7 @@ class TestCompositeGuidanceVideo:
             target_resolution=(128, 128),
             target_fps=16,
             output_path=output_path,
-            download_dir=temp_output_dir,
-            dprint=print
-        )
+            download_dir=temp_output_dir)
         
         assert result.exists()
         
@@ -295,9 +286,7 @@ class TestCompositeGuidanceVideo:
             target_resolution=(128, 128),
             target_fps=16,
             output_path=output_path,
-            download_dir=temp_output_dir,
-            dprint=print
-        )
+            download_dir=temp_output_dir)
         
         assert result.exists()
     
@@ -320,9 +309,7 @@ class TestCompositeGuidanceVideo:
             target_resolution=(128, 128),
             target_fps=16,
             output_path=output_path,
-            download_dir=temp_output_dir,
-            dprint=print
-        )
+            download_dir=temp_output_dir)
         
         assert result.exists()
 
@@ -478,9 +465,7 @@ class TestExtractSegmentStructureGuidance:
             target_resolution=(128, 128),
             target_fps=16,
             output_path=output_path,
-            download_dir=temp_output_dir,
-            dprint=print
-        )
+            download_dir=temp_output_dir)
         
         # No overlap = returns None (segment proceeds without structure guidance)
         # This is cleaner than creating an all-neutral video
@@ -511,9 +496,7 @@ class TestExtractSegmentStructureGuidance:
             target_resolution=(128, 128),
             target_fps=16,
             output_path=output_path,
-            download_dir=temp_output_dir,
-            dprint=print
-        )
+            download_dir=temp_output_dir)
         
         assert result is not None
         assert result.exists()
@@ -544,9 +527,7 @@ class TestExtractSegmentStructureGuidance:
             target_resolution=(128, 128),
             target_fps=16,
             output_path=output_path,
-            download_dir=temp_output_dir,
-            dprint=print
-        )
+            download_dir=temp_output_dir)
         
         assert result is not None
         assert result.exists()
@@ -573,9 +554,7 @@ class TestExtractSegmentStructureGuidance:
             target_resolution=(128, 128),
             target_fps=16,
             output_path=output_path,
-            download_dir=temp_output_dir,
-            dprint=print
-        )
+            download_dir=temp_output_dir)
         
         assert result is None
 
@@ -621,9 +600,7 @@ def run_visual_tests():
         target_resolution=(256, 256),
         target_fps=16,
         output_path=output_dir / "test1_single_partial_raw.mp4",
-        download_dir=output_dir,
-        dprint=print
-    )
+        download_dir=output_dir)
     print(f"  Output: {result_1}")
     
     # Test 2: Two sources with gap (raw type)
@@ -639,9 +616,7 @@ def run_visual_tests():
         target_resolution=(256, 256),
         target_fps=16,
         output_path=output_dir / "test2_two_sources_gap_raw.mp4",
-        download_dir=output_dir,
-        dprint=print
-    )
+        download_dir=output_dir)
     print(f"  Output: {result_2}")
     
     # Test 3: Source range extraction (raw type)
@@ -660,9 +635,7 @@ def run_visual_tests():
         target_resolution=(256, 256),
         target_fps=16,
         output_path=output_dir / "test3_source_range_raw.mp4",
-        download_dir=output_dir,
-        dprint=print
-    )
+        download_dir=output_dir)
     print(f"  Output: {result_3}")
     
     # Test 4: Different treatment modes
@@ -678,9 +651,7 @@ def run_visual_tests():
         target_resolution=(256, 256),
         target_fps=16,
         output_path=output_dir / "test4_treatments_raw.mp4",
-        download_dir=output_dir,
-        dprint=print
-    )
+        download_dir=output_dir)
     print(f"  Output: {result_4}")
     
     print("\n" + "=" * 60)

@@ -103,7 +103,7 @@ def parse_phase_multiplier(
             return ([value] * num_phases, True)
         except (ValueError, TypeError) as e:
             lora_info = f" for LoRA '{lora_name}'" if lora_name else ""
-            raise ValueError(f"Invalid multiplier '{mult_str}'{lora_info}: {e}")
+            raise ValueError(f"Invalid multiplier '{mult_str}'{lora_info}: {e}") from e
 
     # Phase-based format - parse semicolon-separated values
     parts = mult_str.split(";")
@@ -121,7 +121,7 @@ def parse_phase_multiplier(
                 lora_info = f" for LoRA '{lora_name}'" if lora_name else ""
                 raise ValueError(
                     f"Invalid phase {i+1} multiplier '{part}' in '{mult_str}'{lora_info}: {e}"
-                )
+                ) from e
 
     # Fill missing phases with 0.0
     while len(multipliers) < num_phases:

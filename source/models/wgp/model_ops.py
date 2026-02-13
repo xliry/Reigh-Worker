@@ -28,7 +28,7 @@ def load_missing_model_definition(orchestrator, model_key: str, json_path: str):
         try:
             json_def = json.load(f)
         except (ValueError, KeyError) as e:
-            raise ValueError(f"Error while parsing Model Definition File '{json_path}': {str(e)}")
+            raise ValueError(f"Error while parsing Model Definition File '{json_path}': {str(e)}") from e
 
     model_def = json_def["model"]
     model_def["path"] = json_path

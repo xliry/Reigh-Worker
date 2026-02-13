@@ -18,6 +18,7 @@ from typing import List, Tuple
 from datetime import datetime
 import numpy as np
 
+from source.core.log import generation_logger
 from source.utils.mask_utils import create_mask_video_from_inactive_indices
 from source.utils.frame_utils import create_color_frame
 from .ffmpeg_ops import create_video_from_frames_list
@@ -37,8 +38,6 @@ def create_guide_and_mask_for_generation(
     replace_mode: bool = False,
     gap_inserted_frames: dict = None,
     total_frames: int = None,
-    *,
-    dprint=print
 ) -> Tuple[Path, Path]:
     """
     Create guide and mask videos for VACE generation.
@@ -59,7 +58,6 @@ def create_guide_and_mask_for_generation(
         num_anchor_frames: Number of anchor frames to regenerate on each side (default: 3)
         replace_mode: If True, gap frames REPLACE boundary frames instead of being inserted (default: False)
         gap_inserted_frames: Optional dict mapping {relative_gap_index: image_array} to insert and preserve in the gap
-        dprint: Print function for logging
 
     Returns:
         Tuple of (guide_video_path, mask_video_path, total_frame_count)
@@ -77,17 +75,17 @@ def create_guide_and_mask_for_generation(
 
     if resolution_wh[0] <= 0 or resolution_wh[1] <= 0:
         raise ValueError(f"Invalid resolution: {resolution_wh}")
-    
-    # === [FrameAlignmentIssue] GUIDE/MASK CREATION DIAGNOSTICS ===
-    dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK] Task {task_id}: === Guide/Mask Creation Input ===")
-    dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK]   context_frames_before: {len(context_frames_before)} frames")
-    dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK]   context_frames_after: {len(context_frames_after)} frames")
-    dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK]   gap_frame_count: {gap_frame_count}")
-    dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK]   replace_mode: {replace_mode}")
-    dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK]   regenerate_anchors: {regenerate_anchors}, num_anchor_frames: {num_anchor_frames}")
-    dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK]   resolution_wh: {resolution_wh}, fps: {fps}")
+
+    # === GUIDE/MASK CREATION DIAGNOSTICS ===
+    generation_logger.debug(f"[VACE_GUIDE_MASK] Task {task_id}: === Guide/Mask Creation Input ===")
+    generation_logger.debug(f"[VACE_GUIDE_MASK]   context_frames_before: {len(context_frames_before)} frames")
+    generation_logger.debug(f"[VACE_GUIDE_MASK]   context_frames_after: {len(context_frames_after)} frames")
+    generation_logger.debug(f"[VACE_GUIDE_MASK]   gap_frame_count: {gap_frame_count}")
+    generation_logger.debug(f"[VACE_GUIDE_MASK]   replace_mode: {replace_mode}")
+    generation_logger.debug(f"[VACE_GUIDE_MASK]   regenerate_anchors: {regenerate_anchors}, num_anchor_frames: {num_anchor_frames}")
+    generation_logger.debug(f"[VACE_GUIDE_MASK]   resolution_wh: {resolution_wh}, fps: {fps}")
     if gap_inserted_frames:
-        dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK]   gap_inserted_frames at relative indices: {list(gap_inserted_frames.keys())}")
+        generation_logger.debug(f"[VACE_GUIDE_MASK]   gap_inserted_frames at relative indices: {list(gap_inserted_frames.keys())}")
 
     # Calculate total frames accounting for regenerate_anchors and replace_mode
     num_context_before = len(context_frames_before)
@@ -97,21 +95,21 @@ def create_guide_and_mask_for_generation(
     # - Keep all context frames as preserved (black mask)
     # - Add gap_frame_count grey frames in the middle (white mask = generate)
     # The difference is in how the final video is stitched (replace removes original frames)
-    
+
     if replace_mode:
         # REPLACE MODE: context + gap + context
         # All context frames are preserved, gap frames are generated
         num_anchor_frames_before = 0
         num_anchor_frames_after = 0
-        
+
         if total_frames is None:
             total_frames = num_context_before + gap_frame_count + num_context_after
 
-        dprint(f"[VACE_UTILS] Task {task_id}: Creating guide and mask videos (REPLACE MODE)")
-        dprint(f"[VACE_UTILS]   Context before: {num_context_before} frames (preserved)")
-        dprint(f"[VACE_UTILS]   Gap: {gap_frame_count} frames (to generate)")
-        dprint(f"[VACE_UTILS]   Context after: {num_context_after} frames (preserved)")
-        dprint(f"[VACE_UTILS]   Total: {total_frames} frames")
+        generation_logger.debug(f"[VACE_UTILS] Task {task_id}: Creating guide and mask videos (REPLACE MODE)")
+        generation_logger.debug(f"[VACE_UTILS]   Context before: {num_context_before} frames (preserved)")
+        generation_logger.debug(f"[VACE_UTILS]   Gap: {gap_frame_count} frames (to generate)")
+        generation_logger.debug(f"[VACE_UTILS]   Context after: {num_context_after} frames (preserved)")
+        generation_logger.debug(f"[VACE_UTILS]   Total: {total_frames} frames")
     else:
         # INSERT MODE (original behavior)
         # If regenerate_anchors, we'll exclude N anchor frames from each side
@@ -126,13 +124,13 @@ def create_guide_and_mask_for_generation(
 
         total_frames = num_context_before + gap_frame_count + num_context_after
 
-        dprint(f"[VACE_UTILS] Task {task_id}: Creating guide and mask videos (INSERT MODE)")
-        dprint(f"[VACE_UTILS]   Context before: {num_context_before} frames")
-        dprint(f"[VACE_UTILS]   Gap: {gap_frame_count} frames")
-        dprint(f"[VACE_UTILS]   Context after: {num_context_after} frames")
-        dprint(f"[VACE_UTILS]   Total: {total_frames} frames")
+        generation_logger.debug(f"[VACE_UTILS] Task {task_id}: Creating guide and mask videos (INSERT MODE)")
+        generation_logger.debug(f"[VACE_UTILS]   Context before: {num_context_before} frames")
+        generation_logger.debug(f"[VACE_UTILS]   Gap: {gap_frame_count} frames")
+        generation_logger.debug(f"[VACE_UTILS]   Context after: {num_context_after} frames")
+        generation_logger.debug(f"[VACE_UTILS]   Total: {total_frames} frames")
         if regenerate_anchors:
-            dprint(f"[VACE_UTILS]   Regenerate anchors: {num_anchor_frames_before} frames at end of before context, {num_anchor_frames_after} frames at start of after context")
+            generation_logger.debug(f"[VACE_UTILS]   Regenerate anchors: {num_anchor_frames_before} frames at end of before context, {num_anchor_frames_after} frames at start of after context")
 
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -147,24 +145,24 @@ def create_guide_and_mask_for_generation(
     mask_video_path = output_dir / mask_filename
 
     # --- 1. Build Guide Video ---
-    dprint(f"[VACE_UTILS] Task {task_id}: Building guide video...")
+    generation_logger.debug(f"[VACE_UTILS] Task {task_id}: Building guide video...")
 
     guide_frames = []
     gray_frame = create_color_frame(resolution_wh, (128, 128, 128))
-    
+
     # Track indices of inserted frames (absolute index in guide_frames)
     inserted_frame_indices = []
-    
+
     # Normalize gap_inserted_frames to empty dict if None
     gap_inserted_frames = gap_inserted_frames or {}
 
     if replace_mode:
         # REPLACE MODE: Build guide with context + gap + context
         # All context frames preserved, gap frames generated
-        
+
         # Add all context frames from before
         guide_frames.extend(context_frames_before)
-        dprint(f"[VACE_UTILS]   Added {num_context_before} context frames (before, preserved)")
+        generation_logger.debug(f"[VACE_UTILS]   Added {num_context_before} context frames (before, preserved)")
 
         # Add gray placeholders for the gap (or inserted frames)
         for i in range(gap_frame_count):
@@ -173,14 +171,14 @@ def create_guide_and_mask_for_generation(
                 guide_frames.append(gap_inserted_frames[i])
             else:
                 guide_frames.append(gray_frame.copy())
-        
+
         if inserted_frame_indices:
-            dprint(f"[VACE_UTILS]   Inserted {len(inserted_frame_indices)} frames into gap at relative indices: {list(gap_inserted_frames.keys())}")
-        dprint(f"[VACE_UTILS]   Added {gap_frame_count} grey frames for gap (to generate)")
+            generation_logger.debug(f"[VACE_UTILS]   Inserted {len(inserted_frame_indices)} frames into gap at relative indices: {list(gap_inserted_frames.keys())}")
+        generation_logger.debug(f"[VACE_UTILS]   Added {gap_frame_count} grey frames for gap (to generate)")
 
         # Add all context frames from after
         guide_frames.extend(context_frames_after)
-        dprint(f"[VACE_UTILS]   Added {num_context_after} context frames (after, preserved)")
+        generation_logger.debug(f"[VACE_UTILS]   Added {num_context_after} context frames (after, preserved)")
 
     else:
         # INSERT MODE (original behavior)
@@ -189,16 +187,16 @@ def create_guide_and_mask_for_generation(
             # Exclude the last N anchor frames and add them as gray placeholders later
             num_preserved_before = num_context_before - num_anchor_frames_before
             guide_frames.extend(context_frames_before[:num_preserved_before])
-            dprint(f"[VACE_UTILS]   Added {num_preserved_before} context frames (before, excluding {num_anchor_frames_before} anchors)")
+            generation_logger.debug(f"[VACE_UTILS]   Added {num_preserved_before} context frames (before, excluding {num_anchor_frames_before} anchors)")
         else:
             guide_frames.extend(context_frames_before)
-            dprint(f"[VACE_UTILS]   Added {len(context_frames_before)} context frames (before)")
+            generation_logger.debug(f"[VACE_UTILS]   Added {len(context_frames_before)} context frames (before)")
 
         # Add gray placeholders for regenerated anchors (last N frames of before context)
         if regenerate_anchors and num_anchor_frames_before > 0:
             for _ in range(num_anchor_frames_before):
                 guide_frames.append(gray_frame.copy())
-            dprint(f"[VACE_UTILS]   Added {num_anchor_frames_before} gray placeholders for regenerated anchors (end of before context)")
+            generation_logger.debug(f"[VACE_UTILS]   Added {num_anchor_frames_before} gray placeholders for regenerated anchors (end of before context)")
 
         # Add gray placeholder frames for the gap (or inserted frames)
         for i in range(gap_frame_count):
@@ -207,25 +205,25 @@ def create_guide_and_mask_for_generation(
                 guide_frames.append(gap_inserted_frames[i])
             else:
                 guide_frames.append(gray_frame.copy())
-        
+
         if inserted_frame_indices:
-            dprint(f"[VACE_UTILS]   Inserted {len(inserted_frame_indices)} frames into gap at relative indices: {list(gap_inserted_frames.keys())}")
-        dprint(f"[VACE_UTILS]   Added {gap_frame_count} frames for gap")
+            generation_logger.debug(f"[VACE_UTILS]   Inserted {len(inserted_frame_indices)} frames into gap at relative indices: {list(gap_inserted_frames.keys())}")
+        generation_logger.debug(f"[VACE_UTILS]   Added {gap_frame_count} frames for gap")
 
         # Add gray placeholders for regenerated anchors (first N frames of after context)
         if regenerate_anchors and num_anchor_frames_after > 0:
             for _ in range(num_anchor_frames_after):
                 guide_frames.append(gray_frame.copy())
-            dprint(f"[VACE_UTILS]   Added {num_anchor_frames_after} gray placeholders for regenerated anchors (start of after context)")
+            generation_logger.debug(f"[VACE_UTILS]   Added {num_anchor_frames_after} gray placeholders for regenerated anchors (start of after context)")
 
         # Add context frames after gap
         if regenerate_anchors and num_anchor_frames_after > 0:
             # Exclude the first N anchor frames since we added them as gray placeholders above
             guide_frames.extend(context_frames_after[num_anchor_frames_after:])
-            dprint(f"[VACE_UTILS]   Added {len(context_frames_after) - num_anchor_frames_after} context frames (after, excluding {num_anchor_frames_after} anchors)")
+            generation_logger.debug(f"[VACE_UTILS]   Added {len(context_frames_after) - num_anchor_frames_after} context frames (after, excluding {num_anchor_frames_after} anchors)")
         else:
             guide_frames.extend(context_frames_after)
-            dprint(f"[VACE_UTILS]   Added {len(context_frames_after)} context frames (after)")
+            generation_logger.debug(f"[VACE_UTILS]   Added {len(context_frames_after)} context frames (after)")
 
     # Determine final total frame count before writing videos/masks
     guide_frame_count = len(guide_frames)
@@ -235,11 +233,11 @@ def create_guide_and_mask_for_generation(
     if total_frames is None:
         total_frames = guide_frame_count
     elif total_frames != guide_frame_count:
-        dprint(f"[VACE_UTILS] Task {task_id}: total_frames override ({total_frames}) "
+        generation_logger.debug(f"[VACE_UTILS] Task {task_id}: total_frames override ({total_frames}) "
                f"does not match constructed guide ({guide_frame_count}). Using guide frame count.")
         total_frames = guide_frame_count
 
-    dprint(f"[VACE_UTILS]   Final guide frame count: {guide_frame_count}")
+    generation_logger.debug(f"[VACE_UTILS]   Final guide frame count: {guide_frame_count}")
 
     # Create guide video
     try:
@@ -249,17 +247,12 @@ def create_guide_and_mask_for_generation(
             fps,
             resolution_wh
         )
-
-        if not created_guide_video or not created_guide_video.exists():
-            raise RuntimeError("Guide video creation returned None or file doesn't exist")
-
-        dprint(f"[VACE_UTILS] Task {task_id}: Guide video created: {created_guide_video}")
-
+        generation_logger.debug(f"[VACE_UTILS] Task {task_id}: Guide video created: {created_guide_video}")
     except (OSError, ValueError, RuntimeError) as e:
         raise RuntimeError(f"Failed to create guide video: {e}") from e
 
     # --- 2. Build Mask Video ---
-    dprint(f"[VACE_UTILS] Task {task_id}: Building mask video...")
+    generation_logger.debug(f"[VACE_UTILS] Task {task_id}: Building mask video...")
 
     # Determine inactive (black) frame indices
     # Inactive = context frames we want to preserve
@@ -268,11 +261,11 @@ def create_guide_and_mask_for_generation(
 
     if replace_mode:
         # REPLACE MODE: Mark context frames as inactive (black/preserve), gap frames as active (white/generate)
-        
+
         # BLACK: first num_context_before frames (preserved context)
         for i in range(num_context_before):
             inactive_indices.add(i)
-        dprint(f"[VACE_UTILS]   Marked {num_context_before} frames as inactive (preserved from before context)")
+        generation_logger.debug(f"[VACE_UTILS]   Marked {num_context_before} frames as inactive (preserved from before context)")
 
         # WHITE: next gap_frame_count frames (the gap to generate)
         # These are automatically active (not added to inactive_indices)
@@ -281,7 +274,7 @@ def create_guide_and_mask_for_generation(
         start_of_after_context = num_context_before + gap_frame_count
         for i in range(start_of_after_context, total_frames):
             inactive_indices.add(i)
-        dprint(f"[VACE_UTILS]   Marked {num_context_after} frames as inactive (preserved from after context)")
+        generation_logger.debug(f"[VACE_UTILS]   Marked {num_context_after} frames as inactive (preserved from after context)")
 
     else:
         # INSERT MODE (original behavior)
@@ -291,11 +284,11 @@ def create_guide_and_mask_for_generation(
             num_inactive_before = num_context_before - num_anchor_frames_before
             for i in range(num_inactive_before):
                 inactive_indices.add(i)
-            dprint(f"[VACE_UTILS]   Marked {num_inactive_before} frames as inactive (before context, excluding {num_anchor_frames_before} anchors)")
+            generation_logger.debug(f"[VACE_UTILS]   Marked {num_inactive_before} frames as inactive (before context, excluding {num_anchor_frames_before} anchors)")
         else:
             for i in range(num_context_before):
                 inactive_indices.add(i)
-            dprint(f"[VACE_UTILS]   Marked {num_context_before} frames as inactive (before context)")
+            generation_logger.debug(f"[VACE_UTILS]   Marked {num_context_before} frames as inactive (before context)")
 
         # Mark context frames after gap as inactive
         start_of_after_context = num_context_before + gap_frame_count
@@ -305,11 +298,11 @@ def create_guide_and_mask_for_generation(
             for i in range(start_of_after_context + num_anchor_frames_after, total_frames):
                 inactive_indices.add(i)
             num_inactive_after = total_frames - (start_of_after_context + num_anchor_frames_after)
-            dprint(f"[VACE_UTILS]   Marked {num_inactive_after} frames as inactive (after context, excluding {num_anchor_frames_after} anchors)")
+            generation_logger.debug(f"[VACE_UTILS]   Marked {num_inactive_after} frames as inactive (after context, excluding {num_anchor_frames_after} anchors)")
         else:
             for i in range(start_of_after_context, total_frames):
                 inactive_indices.add(i)
-            dprint(f"[VACE_UTILS]   Marked {total_frames - start_of_after_context} frames as inactive (after context)")
+            generation_logger.debug(f"[VACE_UTILS]   Marked {total_frames - start_of_after_context} frames as inactive (after context)")
 
     # Active frames are everything not in inactive_indices
     active_indices = [i for i in range(total_frames) if i not in inactive_indices]
@@ -320,24 +313,24 @@ def create_guide_and_mask_for_generation(
             inactive_indices.add(idx)
             if idx in active_indices:
                 active_indices.remove(idx)
-        dprint(f"[VACE_UTILS]   Marked {len(inserted_frame_indices)} inserted frames as inactive (black/keep) at indices: {inserted_frame_indices}")
+        generation_logger.debug(f"[VACE_UTILS]   Marked {len(inserted_frame_indices)} inserted frames as inactive (black/keep) at indices: {inserted_frame_indices}")
 
-    dprint(f"[VACE_UTILS]   Inactive frame indices (black/keep): {sorted(inactive_indices)}")
-    dprint(f"[VACE_UTILS]   Active frame indices (white/generate): {active_indices}")
-    
-    # === [FrameAlignmentIssue] FINAL STRUCTURE SUMMARY ===
+    generation_logger.debug(f"[VACE_UTILS]   Inactive frame indices (black/keep): {sorted(inactive_indices)}")
+    generation_logger.debug(f"[VACE_UTILS]   Active frame indices (white/generate): {active_indices}")
+
+    # === FINAL STRUCTURE SUMMARY ===
     num_inactive = len(inactive_indices)
     num_active = len(active_indices)
-    dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK] Task {task_id}: === Final Guide/Mask Structure ===")
-    dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK]   Total frames in guide: {total_frames}")
-    dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK]   Preserved (black mask): {num_inactive} frames")
-    dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK]   Generated (white mask): {num_active} frames")
+    generation_logger.debug(f"[VACE_GUIDE_MASK] Task {task_id}: === Final Guide/Mask Structure ===")
+    generation_logger.debug(f"[VACE_GUIDE_MASK]   Total frames in guide: {total_frames}")
+    generation_logger.debug(f"[VACE_GUIDE_MASK]   Preserved (black mask): {num_inactive} frames")
+    generation_logger.debug(f"[VACE_GUIDE_MASK]   Generated (white mask): {num_active} frames")
     # Check 4N+1 constraint
     is_valid_4n1 = (total_frames - 1) % 4 == 0
-    dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK]   Valid 4N+1: {is_valid_4n1} ({total_frames} = 4*{(total_frames-1)//4}+1)")
+    generation_logger.debug(f"[VACE_GUIDE_MASK]   Valid 4N+1: {is_valid_4n1} ({total_frames} = 4*{(total_frames-1)//4}+1)")
     if not is_valid_4n1:
         nearest_valid = ((total_frames - 1) // 4) * 4 + 1
-        dprint(f"[FrameAlignmentIssue] [VACE_GUIDE_MASK]   ⚠️  WARNING: VACE may quantize to {nearest_valid} frames!")
+        generation_logger.warning(f"[VACE_GUIDE_MASK]   VACE may quantize to {nearest_valid} frames!")
 
     # Create mask video
     try:
@@ -348,13 +341,12 @@ def create_guide_and_mask_for_generation(
             output_path=mask_video_path,
             fps=fps,
             task_id_for_logging=task_id,
-            dprint=dprint
         )
 
-        if not created_mask_video or not created_mask_video.exists():
-            raise RuntimeError("Mask video creation returned None or file doesn't exist")
+        if not created_mask_video:
+            raise RuntimeError("Mask video creation failed")
 
-        dprint(f"[VACE_UTILS] Task {task_id}: Mask video created: {created_mask_video}")
+        generation_logger.debug(f"[VACE_UTILS] Task {task_id}: Mask video created: {created_mask_video}")
 
     except (OSError, ValueError, RuntimeError) as e:
         raise RuntimeError(f"Failed to create mask video: {e}") from e
@@ -368,8 +360,6 @@ def validate_frame_range(
     end_frame: int,
     context_frame_count: int,
     task_id: str = "unknown",
-    *,
-    dprint=print
 ) -> Tuple[bool, str]:
     """
     Validate that a frame range has sufficient context frames on both sides.
@@ -382,15 +372,14 @@ def validate_frame_range(
         end_frame: End frame index (exclusive)
         context_frame_count: Required context frames on each side
         task_id: Task ID for logging
-        dprint: Print function for logging
 
     Returns:
         Tuple of (is_valid: bool, error_message: str or None)
     """
-    dprint(f"[VACE_UTILS] Task {task_id}: Validating frame range")
-    dprint(f"[VACE_UTILS]   Total frames: {total_frame_count}")
-    dprint(f"[VACE_UTILS]   Range: [{start_frame}, {end_frame})")
-    dprint(f"[VACE_UTILS]   Context required: {context_frame_count} frames on each side")
+    generation_logger.debug(f"[VACE_UTILS] Task {task_id}: Validating frame range")
+    generation_logger.debug(f"[VACE_UTILS]   Total frames: {total_frame_count}")
+    generation_logger.debug(f"[VACE_UTILS]   Range: [{start_frame}, {end_frame})")
+    generation_logger.debug(f"[VACE_UTILS]   Context required: {context_frame_count} frames on each side")
 
     # Check if range is valid
     if start_frame < 0:
@@ -411,7 +400,7 @@ def validate_frame_range(
     if frames_after < context_frame_count:
         return False, f"Need {context_frame_count} context frames after end_frame ({end_frame}), but only {frames_after} available"
 
-    dprint(f"[VACE_UTILS] Task {task_id}: Frame range validation passed")
+    generation_logger.debug(f"[VACE_UTILS] Task {task_id}: Frame range validation passed")
     return True, None
 
 

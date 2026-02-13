@@ -14,18 +14,6 @@ except ImportError:
     _PSUTIL_AVAILABLE = False
 
 
-def dprint(msg: str, task_id: str = None, debug_mode: bool = False):
-    """Print a debug message if debug_mode is enabled."""
-    if debug_mode:
-        # Use headless_logger to ensure logs go to file if configured
-        headless_logger.debug(msg, task_id=task_id)
-
-def make_task_dprint(task_id: str, debug_mode: bool = False):
-    """Create a task-aware dprint function that automatically includes task_id."""
-    def task_dprint(msg: str):
-        dprint(msg, task_id=task_id, debug_mode=debug_mode)
-    return task_dprint
-
 def log_ram_usage(label: str, task_id: str = "unknown") -> dict:
     """
     Log current RAM usage with a descriptive label.
@@ -97,21 +85,6 @@ def cleanup_generated_files(output_location: str, task_id: str = "unknown", debu
         else:
             headless_logger.debug(f"File cleanup skipped - path not found: {output_location}", task_id=task_id)
 
-        # Clean up temporary files that may have been created during processing
-        _cleanup_temporary_files(task_id, debug_mode)
-
     except OSError as e:
         headless_logger.warning(f"Failed to cleanup generated file {output_location}: {e}", task_id=task_id)
-
-
-def _cleanup_temporary_files(task_id: str = "unknown", debug_mode: bool = False) -> None:
-    """
-    Clean up temporary files that were specifically created during this task's execution.
-    """
-    if debug_mode:
-        return  # Skip temp file cleanup in debug mode
-
-    # Note: Most temporary files are already cleaned up by their respective functions.
-    # This function is mainly a safety net.
-    headless_logger.debug(f"Temporary file cleanup completed (most temp files auto-cleaned by their creators)", task_id=task_id)
 

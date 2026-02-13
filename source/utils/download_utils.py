@@ -2,7 +2,6 @@
 
 import os
 import shutil
-import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -11,8 +10,12 @@ from urllib.parse import urlparse
 import requests
 
 from source.core.log import headless_logger
-from source.utils.prompt_utils import dprint
 
+__all__ = [
+    "download_file",
+    "download_video_if_url",
+    "download_image_if_url",
+]
 
 def _get_unique_target_path(target_dir: Path, base_name: str, extension: str) -> Path:
     """Generates a unique target Path in the given directory by appending a timestamp and random string."""
@@ -29,7 +32,6 @@ def _get_unique_target_path(target_dir: Path, base_name: str, extension: str) ->
 
     filename = f"{base_name}_{timestamp_short}_{unique_suffix}{extension}"
     return target_dir / filename
-
 
 def download_file(url, dest_folder, filename):
     from source.utils.lora_validation import validate_lora_file
@@ -138,7 +140,7 @@ def download_file(url, dest_folder, filename):
                         pass  # Just verify it can be opened
                     headless_logger.essential(f"Successfully downloaded and verified safetensors file {filename}.")
                 except ImportError:
-                    dprint(f"[WARNING] safetensors not available for verification of {filename}")
+                    headless_logger.debug(f"[WARNING] safetensors not available for verification of {filename}")
                 except (OSError, ValueError, RuntimeError) as e:
                     headless_logger.error(f"Downloaded safetensors file {filename} appears corrupted: {e}")
                     dest_path.unlink(missing_ok=True)
@@ -155,7 +157,6 @@ def download_file(url, dest_folder, filename):
             except OSError as e_cleanup:
                 headless_logger.warning(f"Failed to clean up partial download {dest_path}: {e_cleanup}")
         return False
-
 
 def _download_file_if_url(
     file_url_or_path: str,
@@ -191,7 +192,7 @@ def _download_file_if_url(
         target_dir_path = Path(download_target_dir)
         try:
             target_dir_path.mkdir(parents=True, exist_ok=True)
-            dprint(f"Task {task_id_for_logging}: Downloading {file_type_label} from URL: {file_url_or_path} to {target_dir_path.resolve()}")
+            headless_logger.debug(f"Task {task_id_for_logging}: Downloading {file_type_label} from URL: {file_url_or_path} to {target_dir_path.resolve()}")
 
             # Use a session for potential keep-alive and connection pooling
             with requests.Session() as s:
@@ -219,20 +220,18 @@ def _download_file_if_url(
                     if chunk:
                         f.write(chunk)
 
-            dprint(f"Task {task_id_for_logging}: Successfully downloaded {file_type_label} to {local_file_path}")
+            headless_logger.debug(f"Task {task_id_for_logging}: Successfully downloaded {file_type_label} to {local_file_path}")
             return str(local_file_path)
 
         except requests.exceptions.RequestException as e:
-            dprint(f"Task {task_id_for_logging}: ERROR downloading {file_type_label} from {file_url_or_path}: {e}")
+            headless_logger.debug(f"Task {task_id_for_logging}: ERROR downloading {file_type_label} from {file_url_or_path}: {e}")
             return file_url_or_path  # Return original URL on failure
         except OSError as e_dl:
-            dprint(f"Task {task_id_for_logging}: ERROR saving {file_type_label} to {target_dir_path}: {e_dl}")
-            traceback.print_exc()
+            headless_logger.debug(f"Task {task_id_for_logging}: ERROR saving {file_type_label} to {target_dir_path}: {e_dl}", exc_info=True)
             return file_url_or_path  # Return original URL on failure
     else:
         # Not a URL, or no download directory provided
         return file_url_or_path
-
 
 def download_video_if_url(video_url_or_path: str, download_target_dir: Path | str | None, task_id_for_logging: str | None = "generic_task", descriptive_name: str | None = None) -> str:
     """
@@ -250,7 +249,6 @@ def download_video_if_url(video_url_or_path: str, download_target_dir: Path | st
         file_type_label="video",
         timeout=600  # 10 min timeout for larger videos
     )
-
 
 def download_image_if_url(image_url_or_path: str, download_target_dir: Path | str | None, task_id_for_logging: str | None = "generic_task", debug_mode: bool = False, descriptive_name: str | None = None) -> str:
     """

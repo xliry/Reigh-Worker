@@ -3,10 +3,26 @@ Database configuration: globals, constants, and debug helpers.
 
 All module-level state that other db submodules depend on lives here.
 """
-from __future__ import annotations
 
-import datetime
-from typing import Optional
+__all__ = [
+    "PG_TABLE_NAME",
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_KEY",
+    "SUPABASE_VIDEO_BUCKET",
+    "SUPABASE_CLIENT",
+    "SUPABASE_EDGE_COMPLETE_TASK_URL",
+    "SUPABASE_ACCESS_TOKEN",
+    "SUPABASE_EDGE_CREATE_TASK_URL",
+    "SUPABASE_EDGE_CLAIM_TASK_URL",
+    "STATUS_QUEUED",
+    "STATUS_IN_PROGRESS",
+    "STATUS_COMPLETE",
+    "STATUS_FAILED",
+    "debug_mode",
+    "EDGE_FAIL_PREFIX",
+    "RETRYABLE_STATUS_CODES",
+    "validate_config",
+]
 
 # Import centralized logger for system_logs visibility
 try:
@@ -20,7 +36,6 @@ try:
 except ImportError:
     SupabaseClient = None
 
-from source.core.constants import BYTES_PER_MB
 
 # -----------------------------------------------------------------------------
 # Global DB Configuration (will be set by worker.py)
@@ -47,15 +62,9 @@ STATUS_FAILED = "Failed"
 # -----------------------------------------------------------------------------
 debug_mode = False
 
-def dprint(msg: str):
-    """Print a debug message if debug_mode is enabled."""
-    if debug_mode:
-        print(f"[DEBUG {datetime.datetime.now().isoformat()}] {msg}")
-
 def _log_thumbnail(msg: str, level: str = "debug", task_id: str = None):
-    """Log thumbnail-related messages to both stdout and centralized logger."""
+    """Log thumbnail-related messages via the centralized logger."""
     full_msg = f"[THUMBNAIL] {msg}"
-    print(full_msg)  # Always print to stdout
     if headless_logger:
         if level == "info":
             headless_logger.info(full_msg, task_id=task_id)
@@ -70,3 +79,31 @@ def _log_thumbnail(msg: str, level: str = "debug", task_id: str = None):
 EDGE_FAIL_PREFIX = "[EDGE_FAIL"  # Used by debug.py to detect edge failures
 
 RETRYABLE_STATUS_CODES = {500, 502, 503, 504}  # 500 included for transient edge function crashes (CDN issues, cold starts)
+
+
+# -----------------------------------------------------------------------------
+# Config validation
+# -----------------------------------------------------------------------------
+
+def validate_config() -> list[str]:
+    """Validate that required config fields are set after worker initialization.
+
+    Returns a list of error messages (empty if valid).
+    """
+    errors: list[str] = []
+
+    if not SUPABASE_URL:
+        errors.append("SUPABASE_URL is not set")
+    elif not SUPABASE_URL.startswith("http"):
+        errors.append(f"SUPABASE_URL does not look like a URL: {SUPABASE_URL!r}")
+
+    if not SUPABASE_SERVICE_KEY:
+        errors.append("SUPABASE_SERVICE_KEY is not set")
+
+    if SUPABASE_CLIENT is None:
+        errors.append("SUPABASE_CLIENT is not initialized")
+
+    if not SUPABASE_ACCESS_TOKEN:
+        errors.append("SUPABASE_ACCESS_TOKEN is not set")
+
+    return errors

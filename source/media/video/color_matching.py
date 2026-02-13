@@ -4,18 +4,14 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from source.media.video.frame_extraction import extract_frames_from_video
+from source.core.log import generation_logger
+from source.media.video.frame_extraction import extract_frames_from_video, _COLOR_MATCH_DEPS_AVAILABLE
 from source.media.video.video_info import get_video_frame_count_and_fps
 from source.media.video.ffmpeg_ops import create_video_from_frames_list
 
 __all__ = [
-    "_cm_enhance_saturation",
-    "_cm_transfer_mean_std_lab",
     "apply_color_matching_to_video",
 ]
-
-# Flag for dependency availability
-_COLOR_MATCH_DEPS_AVAILABLE = True
 
 
 def _cm_enhance_saturation(image_bgr, saturation_factor=0.5):
@@ -72,15 +68,15 @@ def _cm_transfer_mean_std_lab(source_bgr, target_bgr):
     result_bgr = cv2.cvtColor(result_lab_uint8, cv2.COLOR_LAB2BGR)
     return result_bgr
 
-def apply_color_matching_to_video(video_path: str, start_ref_path: str, end_ref_path: str, output_path: str, dprint):
-    if not all([_COLOR_MATCH_DEPS_AVAILABLE, Path(video_path).exists(), Path(start_ref_path).exists(), Path(end_ref_path).exists()]):
-        dprint(f"Color Matching: Skipping due to missing deps or files. Deps:{_COLOR_MATCH_DEPS_AVAILABLE}, Video:{Path(video_path).exists()}, Start:{Path(start_ref_path).exists()}, End:{Path(end_ref_path).exists()}")
+def apply_color_matching_to_video(input_video_path: str, start_ref_path: str, end_ref_path: str, output_video_path: str):
+    if not all([_COLOR_MATCH_DEPS_AVAILABLE, Path(input_video_path).exists(), Path(start_ref_path).exists(), Path(end_ref_path).exists()]):
+        generation_logger.warning(f"Color Matching: Skipping due to missing deps or files. Deps:{_COLOR_MATCH_DEPS_AVAILABLE}, Video:{Path(input_video_path).exists()}, Start:{Path(start_ref_path).exists()}, End:{Path(end_ref_path).exists()}")
         return None
 
-    frames = extract_frames_from_video(video_path)
-    frame_count, fps = get_video_frame_count_and_fps(video_path)
+    frames = extract_frames_from_video(input_video_path)
+    frame_count, fps = get_video_frame_count_and_fps(input_video_path)
     if not frames or not frame_count or not fps:
-        dprint("Color Matching: Frame extraction or metadata retrieval failed.")
+        generation_logger.warning("Color Matching: Frame extraction or metadata retrieval failed.")
         return None
 
     # Get resolution from the first frame
@@ -115,9 +111,9 @@ def apply_color_matching_to_video(video_path: str, start_ref_path: str, end_ref_
         accumulated_frames.append(blended_frame_bgr)
 
     if accumulated_frames:
-        created_video_path = create_video_from_frames_list(accumulated_frames, output_path, fps, resolution)
-        dprint(f"Color Matching: Successfully created color matched video at {created_video_path}")
+        created_video_path = create_video_from_frames_list(accumulated_frames, output_video_path, fps, resolution)
+        generation_logger.debug(f"Color Matching: Successfully created color matched video at {created_video_path}")
         return created_video_path
 
-    dprint("Color Matching: Failed to produce any frames.")
+    generation_logger.warning("Color Matching: Failed to produce any frames.")
     return None

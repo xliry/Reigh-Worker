@@ -16,7 +16,7 @@ Queue-based video generation system built on [Wan2GP](https://github.com/deepbee
 Organized into 5 top-level groups:
 
 ### source/core/ — Infrastructure
-- `db/` — Database operations (Supabase): config, task claim/completion/dependencies, edge helpers
+- `db/` — Database operations (Supabase): config, task claim/completion/status/dependencies, edge helpers
 - `log/` — Structured logging: core logger, database log sink, safe formatting, timing
 - `params/` — Typed parameter handling: TaskConfig, LoRAConfig, phase_config, structure guidance
 - `constants.py` — Shared constants
@@ -29,14 +29,14 @@ Organized into 5 top-level groups:
 - `vlm/` — Vision-language model: prompt generation, image prep
 
 ### source/models/ — Model Integration
-- `wgp/` — WanOrchestrator: parameter resolution, model ops, LoRA setup, generation helpers, patches
+- `wgp/` — WanOrchestrator: parameter resolution, model ops, LoRA setup, generation strategies, patches
 - `comfy/` — ComfyUI integration
 - `lora/` — LoRA download, path resolution, collision handling
 - `model_handlers/` — Task-type-specific handlers (QwenHandler for 7 Qwen image task types)
 
 ### source/task_handlers/ — Task Orchestration
 - `tasks/` — Task routing: registry, type definitions, DB→GenerationTask conversion
-- `queue/` — HeadlessTaskQueue: task queue, worker thread, download ops, lifecycle
+- `queue/` — HeadlessTaskQueue: task queue, task processor, download ops, lifecycle
 - `travel/` — Multi-image travel: orchestrator, segment processor, SVI config, chaining, stitch
 - `join/` — Video clip joining: orchestrator, generation, final stitch, VLM enhancement
 - `worker/` — Worker utilities: heartbeat, fatal error handling, debug printing

@@ -2,12 +2,19 @@
 
 import os
 import time
-import traceback
 from pathlib import Path
 
-from source.utils.prompt_utils import dprint  # noqa: F401
+from source.core.log import headless_logger
 from source.core.constants import BYTES_PER_KB as BYTES_PER_KIBIBYTE
 
+__all__ = [
+    "prepare_output_path",
+    "sanitize_filename_for_storage",
+    "prepare_output_path_with_upload",
+    "upload_and_get_final_output_location",
+    "upload_intermediate_file_to_storage",
+    "wait_for_file_stable",
+]
 
 # --- SM_RESTRUCTURE: Function moved from worker.py ---
 def _get_task_type_directory(task_type: str) -> str:
@@ -30,14 +37,12 @@ def _get_task_type_directory(task_type: str) -> str:
     # This creates outputs/{task_type}/ structure
     return task_type if task_type else 'misc'
 
-
 def prepare_output_path(
     task_id: str,
     filename: str,
     main_output_dir_base: Path,
     task_type: str | None = None,  # NEW PARAMETER
     *,
-    dprint=lambda *_: None,
     custom_output_dir: str | Path | None = None
 ) -> tuple[Path, str]:
     """
@@ -52,7 +57,6 @@ def prepare_output_path(
         filename: Output filename
         main_output_dir_base: Base output directory (from worker --main-output-dir)
         task_type: Optional task type for subdirectory organization
-        dprint: Debug print function
         custom_output_dir: Optional custom output directory (overrides all)
 
     Returns:
@@ -61,22 +65,24 @@ def prepare_output_path(
     # Decide base directory for the file
     if custom_output_dir:
         output_dir_for_task = Path(custom_output_dir)
-        dprint(f"Task {task_id}: Using custom output directory: {output_dir_for_task}")
+        headless_logger.debug(f"Task {task_id}: Using custom output directory: {output_dir_for_task}", task_id=task_id)
     else:
         # Create task-type-specific subdirectory structure
         if task_type:
             type_subdir = _get_task_type_directory(task_type)
             output_dir_for_task = main_output_dir_base / type_subdir
-            dprint(
+            headless_logger.debug(
                 f"Task {task_id}: Using task-type subdirectory: {output_dir_for_task} "
-                f"(task_type='{task_type}' -> '{type_subdir}')"
+                f"(task_type='{task_type}' -> '{type_subdir}')",
+                task_id=task_id
             )
         else:
             # Backwards compatibility: No task_type provided, use root directory
             output_dir_for_task = main_output_dir_base
-            dprint(
+            headless_logger.debug(
                 f"Task {task_id}: No task_type provided, using root output directory: {output_dir_for_task} "
-                f"(backwards compatibility)"
+                f"(backwards compatibility)",
+                task_id=task_id
             )
 
         # To avoid name collisions we prefix the filename with the task_id
@@ -102,7 +108,7 @@ def prepare_output_path(
             new_filename = f"{stem}_{counter}{suffix}"
             final_save_path = output_dir_for_task / new_filename
             counter += 1
-        dprint(f"Task {task_id}: Filename conflict resolved - using {final_save_path.name}")
+        headless_logger.debug(f"Task {task_id}: Filename conflict resolved - using {final_save_path.name}", task_id=task_id)
 
     # Build DB path string - use relative path to current working directory
     try:
@@ -110,10 +116,9 @@ def prepare_output_path(
     except ValueError:
         db_output_location = str(final_save_path.resolve())
 
-    dprint(f"Task {task_id}: final_save_path='{final_save_path}', db_output_location='{db_output_location}'")
+    headless_logger.debug(f"Task {task_id}: final_save_path='{final_save_path}', db_output_location='{db_output_location}'", task_id=task_id)
 
     return final_save_path, db_output_location
-
 
 def sanitize_filename_for_storage(filename: str) -> str:
     """
@@ -151,14 +156,12 @@ def sanitize_filename_for_storage(filename: str) -> str:
 
     return sanitized
 
-
 def prepare_output_path_with_upload(
     task_id: str,
     filename: str,
     main_output_dir_base: Path,
     task_type: str | None = None,  # NEW PARAMETER
     *,
-    dprint=lambda *_: None,
     custom_output_dir: str | Path | None = None
 ) -> tuple[Path, str]:
     """
@@ -169,7 +172,6 @@ def prepare_output_path_with_upload(
         filename: Output filename
         main_output_dir_base: Base output directory (from worker --main-output-dir)
         task_type: Optional task type for subdirectory organization
-        dprint: Debug print function
         custom_output_dir: Optional custom output directory (overrides all)
 
     Returns:
@@ -182,51 +184,40 @@ def prepare_output_path_with_upload(
     sanitized_filename = sanitize_filename_for_storage(filename)
 
     if original_filename != sanitized_filename:
-        dprint(f"Task {task_id}: Sanitized filename '{original_filename}' -> '{sanitized_filename}'")
+        headless_logger.debug(f"Task {task_id}: Sanitized filename '{original_filename}' -> '{sanitized_filename}'", task_id=task_id)
 
     # First, get the local path where we'll save the file (using sanitized filename)
     # Forward task_type parameter
     local_save_path, initial_db_location = prepare_output_path(
         task_id, sanitized_filename, main_output_dir_base,
         task_type=task_type,  # Forward task_type
-        dprint=dprint, custom_output_dir=custom_output_dir
+        custom_output_dir=custom_output_dir
     )
 
     # Return the local path for now - we'll handle Supabase upload after file is created
     return local_save_path, initial_db_location
 
-
 def upload_and_get_final_output_location(
     local_file_path: Path,
-    supabase_object_name: str,  # This parameter is now unused but kept for compatibility
-    initial_db_location: str,
-    *,
-    dprint=lambda *_: None
-) -> str:
+    initial_db_location: str) -> str:
     """
     Returns the local file path. Upload is now handled by the edge function.
 
     Args:
         local_file_path: Path to the local file
-        supabase_object_name: Unused (kept for compatibility)
         initial_db_location: The initial DB location (local path)
-        dprint: Debug print function
 
     Returns:
         str: Local file path (upload now handled by edge function)
     """
     # Edge function will handle the upload, so we just return the local path
-    dprint(f"File ready for edge function upload: {local_file_path}")
+    headless_logger.debug(f"File ready for edge function upload: {local_file_path}")
     return str(local_file_path.resolve())
-
 
 def upload_intermediate_file_to_storage(
     local_file_path: Path,
     task_id: str,
-    filename: str,
-    *,
-    dprint=lambda *_: None
-) -> str | None:
+    filename: str) -> str | None:
     """
     Upload an intermediate file to Supabase storage for cross-worker access.
 
@@ -239,7 +230,6 @@ def upload_intermediate_file_to_storage(
         local_file_path: Path to the local file to upload
         task_id: Task ID for organizing uploads
         filename: Filename to use in storage
-        dprint: Debug print function
 
     Returns:
         Public URL of the uploaded file, or None on failure
@@ -257,11 +247,11 @@ def upload_intermediate_file_to_storage(
     SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_ANON_KEY")
 
     if not SUPABASE_URL or not SUPABASE_KEY:
-        dprint(f"[UPLOAD_INTERMEDIATE] Supabase not configured, cannot upload")
+        headless_logger.warning(f"[UPLOAD_INTERMEDIATE] Supabase not configured, cannot upload", task_id=task_id)
         return None
 
     if not local_file_path.exists():
-        dprint(f"[UPLOAD_INTERMEDIATE] File not found: {local_file_path}")
+        headless_logger.warning(f"[UPLOAD_INTERMEDIATE] File not found: {local_file_path}", task_id=task_id)
         return None
 
     try:
@@ -293,7 +283,7 @@ def upload_intermediate_file_to_storage(
                     break
                 elif upload_url_resp.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_RETRIES - 1:
                     wait_time = 2 ** attempt
-                    dprint(f"[UPLOAD_INTERMEDIATE] generate-upload-url got {upload_url_resp.status_code}, retrying in {wait_time}s...")
+                    headless_logger.warning(f"[UPLOAD_INTERMEDIATE] generate-upload-url got {upload_url_resp.status_code}, retrying in {wait_time}s...", task_id=task_id)
                     time.sleep(wait_time)
                     continue
                 else:
@@ -302,17 +292,17 @@ def upload_intermediate_file_to_storage(
             except (httpx.HTTPError, OSError, ValueError) as e:
                 if attempt < MAX_RETRIES - 1:
                     wait_time = 2 ** attempt
-                    dprint(f"[UPLOAD_INTERMEDIATE] generate-upload-url error, retrying in {wait_time}s: {e}")
+                    headless_logger.warning(f"[UPLOAD_INTERMEDIATE] generate-upload-url error, retrying in {wait_time}s: {e}", task_id=task_id)
                     time.sleep(wait_time)
                     continue
                 else:
-                    dprint(f"[UPLOAD_INTERMEDIATE] [EDGE_FAIL:generate-upload-url:NETWORK] {e}")
+                    headless_logger.error(f"[UPLOAD_INTERMEDIATE] [EDGE_FAIL:generate-upload-url:NETWORK] {e}", task_id=task_id)
                     return None
 
         if not upload_url_resp or upload_url_resp.status_code != 200:
             error_text = upload_url_resp.text[:200] if upload_url_resp else "No response"
             error_code = upload_url_resp.status_code if upload_url_resp else "N/A"
-            dprint(f"[UPLOAD_INTERMEDIATE] [EDGE_FAIL:generate-upload-url:HTTP_{error_code}] {error_text}")
+            headless_logger.error(f"[UPLOAD_INTERMEDIATE] [EDGE_FAIL:generate-upload-url:HTTP_{error_code}] {error_text}", task_id=task_id)
             return None
 
         upload_data = upload_url_resp.json()
@@ -320,13 +310,13 @@ def upload_intermediate_file_to_storage(
         storage_path = upload_data.get("storage_path")
 
         if not upload_url:
-            dprint(f"[UPLOAD_INTERMEDIATE] No upload_url in response")
+            headless_logger.error(f"[UPLOAD_INTERMEDIATE] No upload_url in response", task_id=task_id)
             return None
 
         # Step 2: Upload file via signed URL - WITH RETRY
         # IMPORTANT: do NOT read entire file into memory (can be large).
         file_size_mb = local_file_path.stat().st_size / BYTES_PER_KIBIBYTE / BYTES_PER_KIBIBYTE
-        dprint(f"[UPLOAD_INTERMEDIATE] Uploading {local_file_path.name} ({file_size_mb:.1f} MB)")
+        headless_logger.debug(f"[UPLOAD_INTERMEDIATE] Uploading {local_file_path.name} ({file_size_mb:.1f} MB)", task_id=task_id)
 
         put_resp = None
         for attempt in range(MAX_RETRIES):
@@ -343,7 +333,7 @@ def upload_intermediate_file_to_storage(
                     break
                 elif put_resp.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_RETRIES - 1:
                     wait_time = 2 ** attempt
-                    dprint(f"[UPLOAD_INTERMEDIATE] storage-upload got {put_resp.status_code}, retrying in {wait_time}s...")
+                    headless_logger.warning(f"[UPLOAD_INTERMEDIATE] storage-upload got {put_resp.status_code}, retrying in {wait_time}s...", task_id=task_id)
                     time.sleep(wait_time)
                     continue
                 else:
@@ -352,32 +342,30 @@ def upload_intermediate_file_to_storage(
             except (httpx.HTTPError, OSError, ValueError) as e:
                 if attempt < MAX_RETRIES - 1:
                     wait_time = 2 ** attempt
-                    dprint(f"[UPLOAD_INTERMEDIATE] storage-upload error, retrying in {wait_time}s: {e}")
+                    headless_logger.warning(f"[UPLOAD_INTERMEDIATE] storage-upload error, retrying in {wait_time}s: {e}", task_id=task_id)
                     time.sleep(wait_time)
                     continue
                 else:
-                    dprint(f"[UPLOAD_INTERMEDIATE] [EDGE_FAIL:storage-upload:NETWORK] {e}")
+                    headless_logger.error(f"[UPLOAD_INTERMEDIATE] [EDGE_FAIL:storage-upload:NETWORK] {e}", task_id=task_id)
                     return None
 
         if not put_resp or put_resp.status_code not in [200, 201]:
             error_text = put_resp.text[:200] if put_resp else "No response"
             error_code = put_resp.status_code if put_resp else "N/A"
-            dprint(f"[UPLOAD_INTERMEDIATE] [EDGE_FAIL:storage-upload:HTTP_{error_code}] {error_text}")
+            headless_logger.error(f"[UPLOAD_INTERMEDIATE] [EDGE_FAIL:storage-upload:HTTP_{error_code}] {error_text}", task_id=task_id)
             return None
 
         # Construct public URL
         public_url = f"{SUPABASE_URL}/storage/v1/object/public/image_uploads/{storage_path}"
-        dprint(f"[UPLOAD_INTERMEDIATE] Uploaded to: {public_url}")
+        headless_logger.debug(f"[UPLOAD_INTERMEDIATE] Uploaded to: {public_url}", task_id=task_id)
 
         return public_url
 
     except (httpx.HTTPError, OSError, ValueError) as e:
-        dprint(f"[UPLOAD_INTERMEDIATE] Exception: {e}")
-        traceback.print_exc()
+        headless_logger.error(f"[UPLOAD_INTERMEDIATE] Exception: {e}", task_id=task_id, exc_info=True)
         return None
 
-
-def wait_for_file_stable(path: Path | str, checks: int = 3, interval: float = 1.0, *, dprint=print) -> bool:
+def wait_for_file_stable(path: Path | str, checks: int = 3, interval: float = 1.0) -> bool:
     """Return True when the file size stays constant for a few consecutive checks.
     Useful to make sure long-running encoders have finished writing before we
     copy/move the file.

@@ -4,142 +4,150 @@ Qwen Image Edit Model Handler
 Handles all Qwen-specific task types with proper LoRA configuration,
 system prompts, and preprocessing logic.
 
+Compositing utilities live in qwen_compositor.py.
+Prompt/system-instruction helpers live in qwen_prompts.py.
+
 Extracted from worker.py (687 lines of Qwen code).
 """
 
 from pathlib import Path
 from typing import Dict, Any, Optional
-import requests
-from io import BytesIO
-from PIL import Image  # type: ignore
 from huggingface_hub import hf_hub_download  # type: ignore
 
-from source.core.log import headless_logger
+from source.core.log import model_logger
 from source.utils import download_image_if_url
 from source.core.params.phase_multiplier_utils import format_phase_multipliers, extract_phase_values
+
+from source.models.model_handlers.qwen_compositor import (
+    cap_qwen_resolution,
+    create_qwen_masked_composite,
+)
+from source.models.model_handlers.qwen_prompts import (
+    SYSTEM_PROMPT_IMAGE_EDIT,
+    SYSTEM_PROMPT_INPAINT,
+    SYSTEM_PROMPT_ANNOTATED_EDIT,
+    SYSTEM_PROMPT_IMAGE_GEN,
+    SYSTEM_PROMPT_IMAGE_HIRES,
+    SYSTEM_PROMPT_IMAGE_2512,
+    SYSTEM_PROMPT_TURBO,
+    apply_system_prompt,
+    build_style_prompt,
+    select_style_system_prompt,
+)
+
+# Model configs for Qwen image edit variants.
+# Each variant has its own base model and dedicated Lightning LoRA.
+QWEN_EDIT_MODEL_CONFIG = {
+    "qwen-edit": {
+        "model_name": "qwen_image_edit_20B",
+        "lightning_fname": "Qwen-Image-Edit-Lightning-8steps-V1.0-bf16.safetensors",
+        "lightning_repo": "lightx2v/Qwen-Image-Lightning",
+        "hf_subfolder": None,
+    },
+    "qwen-edit-2509": {
+        "model_name": "qwen_image_edit_plus_20B",
+        "lightning_fname": "Qwen-Image-Edit-2509-Lightning-8steps-V1.0-bf16.safetensors",
+        "lightning_repo": "lightx2v/Qwen-Image-Lightning",
+        "hf_subfolder": "Qwen-Image-Edit-2509",
+    },
+    "qwen-edit-2511": {
+        "model_name": "qwen_image_edit_plus2_20B",
+        "lightning_fname": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors",
+        "lightning_repo": "lightx2v/Qwen-Image-Edit-2511-Lightning",
+        "hf_subfolder": None,
+    },
+}
 
 
 class QwenHandler:
     """Handles all Qwen image editing task types."""
-    
-    def __init__(self, wan_root: str, task_id: str, dprint_func):
+
+    def __init__(self, wan_root: str, task_id: str):
         """
         Initialize Qwen handler.
-        
+
         Args:
             wan_root: Path to Wan2GP root directory
             task_id: Task ID for logging
-            dprint_func: Debug print function
         """
         self.wan_root = Path(wan_root).resolve()
         self.task_id = task_id
-        self.dprint = dprint_func
         self.qwen_lora_dir = self.wan_root / "loras_qwen"
         self.qwen_lora_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── Logging helpers ─────────────────────────────────────────────────
+
     def _log_debug(self, message: str):
         """Log debug message."""
-        if self.dprint:
-            self.dprint(f"[QWEN_HANDLER] Task {self.task_id}: {message}")
+        model_logger.debug(f"[QWEN_HANDLER] Task {self.task_id}: {message}", task_id=self.task_id)
 
     def _log_info(self, message: str):
         """Log info message."""
-        headless_logger.info(f"[QWEN_HANDLER] Task {self.task_id}: {message}", task_id=self.task_id)
+        model_logger.info(f"[QWEN_HANDLER] Task {self.task_id}: {message}", task_id=self.task_id)
 
     def _log_warning(self, message: str):
         """Log warning message."""
-        headless_logger.warning(f"[QWEN_HANDLER] Task {self.task_id}: {message}", task_id=self.task_id)
+        model_logger.warning(f"[QWEN_HANDLER] Task {self.task_id}: {message}", task_id=self.task_id)
 
     def _log_error(self, message: str):
         """Log error message."""
-        headless_logger.error(f"[QWEN_HANDLER] Task {self.task_id}: {message}", task_id=self.task_id)
+        model_logger.error(f"[QWEN_HANDLER] Task {self.task_id}: {message}", task_id=self.task_id)
+
+    # ── Model config helpers ────────────────────────────────────────────
+
+    def _get_edit_model_config(self, db_task_params: Dict[str, Any]) -> dict:
+        """Get the config for the selected edit model variant."""
+        variant = db_task_params.get("qwen_edit_model", "qwen-edit")
+        config = QWEN_EDIT_MODEL_CONFIG.get(variant)
+        if config is None:
+            self._log_warning(f"Unknown qwen_edit_model '{variant}', falling back to 'qwen-edit'")
+            config = QWEN_EDIT_MODEL_CONFIG["qwen-edit"]
+        return config
+
+    def get_edit_model_name(self, db_task_params: Dict[str, Any]) -> str:
+        """Return the WGP model name for the selected edit model variant."""
+        return self._get_edit_model_config(db_task_params)["model_name"]
+
+    # ── Compositor / resolution delegates ───────────────────────────────
 
     def cap_qwen_resolution(self, resolution_str: str) -> Optional[str]:
-        """
-        Cap resolution to 1200px max dimension while maintaining aspect ratio.
-        """
-        max_dimension = 1200
-        if not resolution_str or 'x' not in resolution_str:
-            return None
-        try:
-            width, height = map(int, resolution_str.split('x'))
-        except ValueError:
-            self._log_warning(f"Invalid resolution format: {resolution_str}")
-            return None
-        
-        if width > max_dimension or height > max_dimension:
-            ratio = min(max_dimension / width, max_dimension / height)
-            width = int(width * ratio)
-            height = int(height * ratio)
-            capped = f"{width}x{height}"
-            self._log_info(f"Resolution capped from {resolution_str} to {capped}")
-            return capped
-        return resolution_str
+        """Cap resolution to 1200px max dimension while maintaining aspect ratio."""
+        return cap_qwen_resolution(resolution_str, task_id=self.task_id)
 
     def create_qwen_masked_composite(
         self,
         image_url: str,
         mask_url: str,
-        output_dir: Path
+        output_dir: Path,
     ) -> str:
-        """
-        Create composite image with green overlay for Qwen inpainting/annotation.
-        """
-        try:
-            self._log_debug(f"Downloading image from {image_url}")
-            img_response = requests.get(image_url, timeout=30)
-            img_response.raise_for_status()
-            image = Image.open(BytesIO(img_response.content)).convert('RGB')
-            
-            max_dimension = 1200
-            width, height = image.size
-            if width > max_dimension or height > max_dimension:
-                ratio = min(max_dimension / width, max_dimension / height)
-                new_width = int(width * ratio)
-                new_height = int(height * ratio)
-                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                self._log_debug(f"Resized image from {width}x{height} to {new_width}x{new_height}")
-                width, height = new_width, new_height
-            
-            self._log_debug(f"Downloading mask from {mask_url}")
-            mask_response = requests.get(mask_url, timeout=30)
-            mask_response.raise_for_status()
-            mask = Image.open(BytesIO(mask_response.content)).convert('L')
-            
-            if mask.size != (width, height):
-                mask = mask.resize((width, height), Image.Resampling.LANCZOS)
-                self._log_debug(f"Resized mask to match image: {width}x{height}")
-            
-            mask = mask.point(lambda x: 0 if x < 128 else 255)
-            green_overlay = Image.new('RGB', (width, height), (0, 255, 0))
-            composite = Image.composite(green_overlay, image, mask)
-            
-            output_dir.mkdir(parents=True, exist_ok=True)
-            composite_filename = f"inpaint_composite_{self.task_id}.jpg"
-            composite_path = output_dir / composite_filename
-            composite.save(composite_path, 'JPEG', quality=95)
-            
-            self._log_info(f"Created green mask composite: {composite_path}")
-            return str(composite_path)
-        except (OSError, ValueError, RuntimeError) as e:
-            self._log_error(f"Failed to create masked composite: {e}")
-            raise ValueError(f"Composite image creation failed: {e}")
+        """Create composite image with green overlay for Qwen inpainting/annotation."""
+        return create_qwen_masked_composite(
+            image_url,
+            mask_url,
+            output_dir,
+            task_id=self.task_id,
+        )
 
-    def _download_lora_if_missing(self, repo_id: str, filename: str) -> Optional[Path]:
+    # ── LoRA management ─────────────────────────────────────────────────
+
+    def _download_lora_if_missing(self, repo_id: str, filename: str, hf_subfolder: str = None) -> Optional[Path]:
         """Helper to download a LoRA if it doesn't exist locally."""
         target_path = self.qwen_lora_dir / filename
         if target_path.exists():
             self._log_debug(f"LoRA already present: {target_path}")
             return target_path.resolve()
 
-        self._log_info(f"Downloading LoRA '{filename}' from '{repo_id}'")
+        self._log_info(f"Downloading LoRA '{filename}' from '{repo_id}'" +
+                       (f" (subfolder: {hf_subfolder})" if hf_subfolder else ""))
         try:
             dl_path = hf_hub_download(
                 repo_id=repo_id,
                 filename=filename,
+                subfolder=hf_subfolder,
                 revision="main",
                 local_dir=str(self.qwen_lora_dir)
             )
+            # If downloaded to a subdirectory, move to flat location
             actual_path = Path(dl_path)
             if actual_path.exists() and actual_path.resolve() != target_path.resolve():
                 actual_path.replace(target_path)
@@ -160,6 +168,7 @@ class QwenHandler:
         generation_params: Dict[str, Any],
         lightning_fname: str = "Qwen-Image-Edit-Lightning-8steps-V1.0-bf16.safetensors",
         lightning_repo: str = "lightx2v/Qwen-Image-Lightning",
+        hf_subfolder: str = None,
         default_phase1: float = 0.85,
         default_phase2: float = 0.0,
     ):
@@ -167,7 +176,7 @@ class QwenHandler:
         self._ensure_lora_lists(generation_params)
 
         if not (self.qwen_lora_dir / lightning_fname).exists():
-            self._download_lora_if_missing(lightning_repo, lightning_fname)
+            self._download_lora_if_missing(lightning_repo, lightning_fname, hf_subfolder=hf_subfolder)
 
         if lightning_fname in generation_params["lora_names"]:
             return
@@ -214,44 +223,29 @@ class QwenHandler:
             generation_params["lora_names"].append(filename)
             generation_params["lora_multipliers"].append(multiplier)
 
-    def handle_qwen_image_edit(self, db_task_params: Dict[str, Any], generation_params: Dict[str, Any]):
-        """Handle qwen_image_edit task type."""
-        self._log_info("Processing qwen_image_edit task")
-        
-        image_url = db_task_params.get("image") or db_task_params.get("image_url")
-        if not image_url:
-            raise ValueError(f"Task {self.task_id}: 'image' or 'image_url' required for qwen_image_edit")
-        
-        downloads_dir = Path("outputs/qwen_edit_images")
-        downloads_dir.mkdir(parents=True, exist_ok=True)
-        local_image_path = download_image_if_url(
-            image_url, downloads_dir, 
-            task_id_for_logging=self.task_id, 
-            debug_mode=False,
-            descriptive_name="edit_image"
-        )
-        generation_params["image_guide"] = str(local_image_path)
-        self._log_info(f"Using image_guide: {local_image_path}")
-        
-        if "resolution" in db_task_params:
-            capped_res = self.cap_qwen_resolution(db_task_params["resolution"])
-            if capped_res:
-                generation_params["resolution"] = capped_res
-        
-        generation_params.setdefault("video_prompt_type", "KI")
-        generation_params.setdefault("guidance_scale", 1)
-        generation_params.setdefault("num_inference_steps", 12)
-        generation_params.setdefault("video_length", 1)
+    def _apply_additional_loras(self, db_task_params: Dict[str, Any], generation_params: Dict[str, Any]):
+        """Apply additional LoRAs from task params (loras array or additional_loras dict)."""
+        # Handle array format: [{"path": "url", "scale": 0.8}]
+        loras = db_task_params.get("loras", [])
+        for lora in loras:
+            if isinstance(lora, dict):
+                path = lora.get("path", "")
+                scale = float(lora.get("scale", 1.0))
+                if path:
+                    if "additional_loras" not in generation_params:
+                        generation_params["additional_loras"] = {}
+                    generation_params["additional_loras"][path] = scale
+                    self._log_debug(f"Added LoRA from array: {path} @ {scale}")
 
-        if "system_prompt" in db_task_params and db_task_params["system_prompt"]:
-            generation_params["system_prompt"] = db_task_params["system_prompt"]
-        else:
-            generation_params["system_prompt"] = "You are a professional image editor. Analyze the input image carefully, then apply the requested modifications precisely while maintaining visual coherence and image quality."
+        # Handle dict format: {"url": scale}
+        additional_loras = db_task_params.get("additional_loras", {})
+        if additional_loras:
+            if "additional_loras" not in generation_params:
+                generation_params["additional_loras"] = {}
+            generation_params["additional_loras"].update(additional_loras)
+            self._log_debug(f"Added {len(additional_loras)} additional LoRAs from dict")
 
-        self._add_lightning_lora(db_task_params, generation_params, default_phase1=0.85, default_phase2=0.0)
-
-        # Optional hires fix - can be enabled on any qwen_image_edit task
-        self._maybe_add_hires_config(db_task_params, generation_params)
+    # ── Hires fix ───────────────────────────────────────────────────────
 
     def _maybe_add_hires_config(self, db_task_params: Dict[str, Any], generation_params: Dict[str, Any]):
         """Add hires_config if hires params are present in task params."""
@@ -332,6 +326,51 @@ class QwenHandler:
         generation_params["lora_multipliers"] = pass1_multipliers
         self._log_info(f"Sending pass 1 multipliers to WGP: {pass1_multipliers}")
 
+    # ── Task handlers ───────────────────────────────────────────────────
+
+    def handle_qwen_image_edit(self, db_task_params: Dict[str, Any], generation_params: Dict[str, Any]):
+        """Handle qwen_image_edit task type."""
+        self._log_info("Processing qwen_image_edit task")
+
+        image_url = db_task_params.get("image") or db_task_params.get("image_url")
+        if not image_url:
+            raise ValueError(f"Task {self.task_id}: 'image' or 'image_url' required for qwen_image_edit")
+
+        downloads_dir = Path("outputs/qwen_edit_images")
+        downloads_dir.mkdir(parents=True, exist_ok=True)
+        local_image_path = download_image_if_url(
+            image_url, downloads_dir,
+            task_id_for_logging=self.task_id,
+            debug_mode=False,
+            descriptive_name="edit_image"
+        )
+        generation_params["image_guide"] = str(local_image_path)
+        self._log_info(f"Using image_guide: {local_image_path}")
+
+        if "resolution" in db_task_params:
+            capped_res = self.cap_qwen_resolution(db_task_params["resolution"])
+            if capped_res:
+                generation_params["resolution"] = capped_res
+
+        generation_params.setdefault("video_prompt_type", "KI")
+        generation_params.setdefault("guidance_scale", 1)
+        generation_params.setdefault("num_inference_steps", 12)
+        generation_params.setdefault("video_length", 1)
+
+        apply_system_prompt(db_task_params, generation_params, SYSTEM_PROMPT_IMAGE_EDIT)
+
+        edit_config = self._get_edit_model_config(db_task_params)
+        self._add_lightning_lora(
+            db_task_params, generation_params,
+            lightning_fname=edit_config["lightning_fname"],
+            lightning_repo=edit_config["lightning_repo"],
+            hf_subfolder=edit_config["hf_subfolder"],
+            default_phase1=0.85, default_phase2=0.0,
+        )
+
+        # Optional hires fix - can be enabled on any qwen_image_edit task
+        self._maybe_add_hires_config(db_task_params, generation_params)
+
     def _handle_qwen_image_task(
         self,
         db_task_params: Dict[str, Any],
@@ -366,12 +405,16 @@ class QwenHandler:
         generation_params.setdefault("num_inference_steps", 12)
         generation_params.setdefault("video_length", 1)
 
-        if "system_prompt" in db_task_params and db_task_params["system_prompt"]:
-            generation_params["system_prompt"] = db_task_params["system_prompt"]
-        else:
-            generation_params["system_prompt"] = default_system_prompt
+        apply_system_prompt(db_task_params, generation_params, default_system_prompt)
 
-        self._add_lightning_lora(db_task_params, generation_params, default_phase1=0.75, default_phase2=0.0)
+        edit_config = self._get_edit_model_config(db_task_params)
+        self._add_lightning_lora(
+            db_task_params, generation_params,
+            lightning_fname=edit_config["lightning_fname"],
+            lightning_repo=edit_config["lightning_repo"],
+            hf_subfolder=edit_config["hf_subfolder"],
+            default_phase1=0.75, default_phase2=0.0,
+        )
         self._add_task_lora(generation_params, task_lora_repo, task_lora_fname)
 
         # Optional hires fix
@@ -383,7 +426,7 @@ class QwenHandler:
             db_task_params, generation_params,
             task_label="image_inpaint",
             composite_subdir="qwen_inpaint_composites",
-            default_system_prompt="You are an expert at inpainting. The green areas indicate regions to fill. Analyze the context and generate natural content based on the description.",
+            default_system_prompt=SYSTEM_PROMPT_INPAINT,
             task_lora_repo="ostris/qwen_image_edit_inpainting",
             task_lora_fname="qwen_image_edit_inpainting.safetensors",
         )
@@ -394,7 +437,7 @@ class QwenHandler:
             db_task_params, generation_params,
             task_label="annotated_image_edit",
             composite_subdir="qwen_annotate_composites",
-            default_system_prompt="You are an expert at interpreting visual annotations. Analyze the green annotations and modify the marked areas according to instructions.",
+            default_system_prompt=SYSTEM_PROMPT_ANNOTATED_EDIT,
             task_lora_repo="peteromallet/random_junk",
             task_lora_fname="in_scene_pure_squares_flipped_450_lr_000006700.safetensors",
         )
@@ -402,31 +445,21 @@ class QwenHandler:
     def handle_qwen_image_style(self, db_task_params: Dict[str, Any], generation_params: Dict[str, Any]):
         """Handle qwen_image_style task type."""
         self._log_info("Processing qwen_image_style task")
-        
+
         original_prompt = generation_params.get("prompt", db_task_params.get("prompt", ""))
-        
+
         style_strength = float(db_task_params.get("style_reference_strength", 0.0) or 0.0)
         subject_strength = float(db_task_params.get("subject_strength", 0.0) or 0.0)
         scene_strength = float(db_task_params.get("scene_reference_strength", 0.0) or 0.0)
         subject_description = db_task_params.get("subject_description", "")
         in_this_scene = db_task_params.get("in_this_scene", False)
 
-        prompt_parts = []
-        has_style_prefix = False
-
-        if style_strength > 0.0:
-            prompt_parts.append("In the style of this image,")
-            has_style_prefix = True
-
-        if subject_strength > 0.0 and subject_description:
-            make_word = "make" if has_style_prefix else "Make"
-            if in_this_scene:
-                prompt_parts.append(f"{make_word} an image of this {subject_description} in this scene:")
-            else:
-                prompt_parts.append(f"{make_word} an image of this {subject_description}:")
-
-        if prompt_parts:
-            modified_prompt = " ".join(prompt_parts) + " " + original_prompt
+        # Build modified prompt using extracted helper
+        modified_prompt = build_style_prompt(
+            original_prompt, style_strength, subject_strength,
+            subject_description, in_this_scene,
+        )
+        if modified_prompt != original_prompt:
             generation_params["prompt"] = modified_prompt
             self._log_info(f"Modified prompt to: {modified_prompt}")
 
@@ -436,9 +469,9 @@ class QwenHandler:
                 downloads_dir = Path("outputs/style_refs")
                 downloads_dir.mkdir(parents=True, exist_ok=True)
                 local_ref_path = download_image_if_url(
-                    reference_image, downloads_dir, 
-                    task_id_for_logging=self.task_id, 
-                    debug_mode=False, 
+                    reference_image, downloads_dir,
+                    task_id_for_logging=self.task_id,
+                    debug_mode=False,
                     descriptive_name="reference_image"
                 )
                 generation_params["image_guide"] = str(local_ref_path)
@@ -456,24 +489,25 @@ class QwenHandler:
         generation_params.setdefault("video_length", 1)
 
         # Set system prompt based on parameters
-        if "system_prompt" in db_task_params and db_task_params["system_prompt"]:
-            generation_params["system_prompt"] = db_task_params["system_prompt"]
+        custom_prompt = db_task_params.get("system_prompt")
+        if custom_prompt:
+            generation_params["system_prompt"] = custom_prompt
         else:
-            has_subject = subject_strength > 0
-            has_style = style_strength > 0
-            has_scene = scene_strength > 0
+            generation_params["system_prompt"] = select_style_system_prompt(
+                has_subject=subject_strength > 0,
+                has_style=style_strength > 0,
+                has_scene=scene_strength > 0,
+            )
 
-            if has_subject and has_style and has_scene:
-                generation_params["system_prompt"] = "You are an expert at creating images with consistent subjects, styles, and scenes."
-            elif has_subject and has_style:
-                generation_params["system_prompt"] = "You are an expert at creating images with consistent subjects and styles."
-            elif has_style:
-                generation_params["system_prompt"] = "You are an expert at applying artistic styles consistently."
-            else:
-                generation_params["system_prompt"] = "You are an expert at image-to-image generation."
-
-        # Lightning LoRA
-        self._add_lightning_lora(db_task_params, generation_params, default_phase1=0.85, default_phase2=0.0)
+        # Lightning LoRA (variant-aware)
+        edit_config = self._get_edit_model_config(db_task_params)
+        self._add_lightning_lora(
+            db_task_params, generation_params,
+            lightning_fname=edit_config["lightning_fname"],
+            lightning_repo=edit_config["lightning_repo"],
+            hf_subfolder=edit_config["hf_subfolder"],
+            default_phase1=0.85, default_phase2=0.0,
+        )
 
         # Conditional style/subject/scene LoRAs
         style_fname = "style_transfer_qwen_edit_2_000011250.safetensors"
@@ -493,16 +527,16 @@ class QwenHandler:
     def handle_qwen_image_hires(self, db_task_params: Dict[str, Any], generation_params: Dict[str, Any]):
         """
         Handle qwen_image_hires task type - two-pass generation with latent upscaling.
-        
+
         Workflow:
         - Pass 1: Generate at base resolution (default 1328x1328)
         - Latent upscale: Bicubic interpolation in latent space
         - Pass 2: Refine at higher resolution with partial denoising
-        
+
         This replicates the ComfyUI two-pass hires fix workflow.
         """
         self._log_info("Processing qwen_image_hires task (two-pass generation)")
-        
+
         # Default base resolutions matching ComfyUI workflow
         BASE_RESOLUTIONS = {
             "1:1": (1328, 1328),
@@ -513,7 +547,7 @@ class QwenHandler:
             "3:2": (1584, 1056),
             "2:3": (1056, 1584),
         }
-        
+
         # Determine base resolution
         resolution_input = db_task_params.get("resolution", "1328x1328")
         if resolution_input in BASE_RESOLUTIONS:
@@ -522,9 +556,9 @@ class QwenHandler:
             resolution_str = f"{w}x{h}"
         else:
             resolution_str = resolution_input
-        
+
         generation_params["resolution"] = resolution_str
-        
+
         # Build hires config
         hires_config = {
             "enabled": True,
@@ -534,19 +568,16 @@ class QwenHandler:
             "upscale_method": db_task_params.get("hires_upscale_method", "bicubic"),
         }
         generation_params["hires_config"] = hires_config
-        
+
         # Base generation params
         generation_params.setdefault("video_prompt_type", "KI")
         generation_params.setdefault("guidance_scale", 1)
         generation_params.setdefault("num_inference_steps", int(db_task_params.get("num_inference_steps", 10)))
         generation_params.setdefault("video_length", 1)
-        
+
         # System prompt
-        if "system_prompt" in db_task_params and db_task_params["system_prompt"]:
-            generation_params["system_prompt"] = db_task_params["system_prompt"]
-        else:
-            generation_params["system_prompt"] = "You are a professional image generator. Create high-quality, detailed images based on the description."
-        
+        apply_system_prompt(db_task_params, generation_params, SYSTEM_PROMPT_IMAGE_HIRES)
+
         self._add_lightning_lora_simple(db_task_params, generation_params, default_strength=0.45)
 
         # Log final config
@@ -554,7 +585,7 @@ class QwenHandler:
         final_w = int(base_w * hires_config["scale"])
         final_h = int(base_h * hires_config["scale"])
         self._log_info(
-            f"Hires workflow: {resolution_str} → {final_w}x{final_h}, "
+            f"Hires workflow: {resolution_str} -> {final_w}x{final_h}, "
             f"base {generation_params['num_inference_steps']} steps, "
             f"hires {hires_config['hires_steps']} steps @ {hires_config['denoising_strength']} denoise"
         )
@@ -581,10 +612,7 @@ class QwenHandler:
         generation_params.setdefault("video_length", 1)
 
         # System prompt
-        if "system_prompt" in db_task_params and db_task_params["system_prompt"]:
-            generation_params["system_prompt"] = db_task_params["system_prompt"]
-        else:
-            generation_params["system_prompt"] = "You are a professional image generator. Create high-quality, detailed images based on the description provided."
+        apply_system_prompt(db_task_params, generation_params, SYSTEM_PROMPT_IMAGE_GEN)
 
         self._add_lightning_lora(
             db_task_params, generation_params,
@@ -615,19 +643,9 @@ class QwenHandler:
         # Resolution handling - this model supports up to 2512px
         resolution = db_task_params.get("resolution", "1024x1024")
         # Allow higher resolution for this model variant
-        max_dimension = 2512
-        if resolution and 'x' in resolution:
-            try:
-                width, height = map(int, resolution.split('x'))
-                if width > max_dimension or height > max_dimension:
-                    ratio = min(max_dimension / width, max_dimension / height)
-                    width = int(width * ratio)
-                    height = int(height * ratio)
-                    resolution = f"{width}x{height}"
-                    self._log_info(f"Resolution capped to {resolution} (max {max_dimension}px)")
-            except ValueError:
-                pass
-        generation_params["resolution"] = resolution
+        capped_res = cap_qwen_resolution(resolution, max_dimension=2512, task_id=self.task_id)
+        if capped_res:
+            generation_params["resolution"] = capped_res
 
         # Base generation params - optimized for 4-step Lightning LoRA
         generation_params.setdefault("video_prompt_type", "")  # No input image
@@ -636,10 +654,7 @@ class QwenHandler:
         generation_params.setdefault("video_length", 1)
 
         # System prompt optimized for text rendering
-        if "system_prompt" in db_task_params and db_task_params["system_prompt"]:
-            generation_params["system_prompt"] = db_task_params["system_prompt"]
-        else:
-            generation_params["system_prompt"] = "You are an expert image generator specializing in photorealistic images with accurate text rendering. Pay careful attention to any text, typography, or lettering in the prompt and render it clearly and legibly."
+        apply_system_prompt(db_task_params, generation_params, SYSTEM_PROMPT_IMAGE_2512)
 
         self._add_lightning_lora(
             db_task_params, generation_params,
@@ -682,10 +697,7 @@ class QwenHandler:
         generation_params.setdefault("video_length", 1)
 
         # System prompt
-        if "system_prompt" in db_task_params and db_task_params["system_prompt"]:
-            generation_params["system_prompt"] = db_task_params["system_prompt"]
-        else:
-            generation_params["system_prompt"] = "Generate an image based on the description."
+        apply_system_prompt(db_task_params, generation_params, SYSTEM_PROMPT_TURBO)
 
         self._add_lightning_lora_simple(db_task_params, generation_params, default_strength=1.0)
 
@@ -699,25 +711,3 @@ class QwenHandler:
             self._log_warning("Hires fix enabled on turbo mode - this will significantly increase generation time")
 
         self._log_info(f"z_image_turbo: {generation_params.get('resolution')}, {generation_params['num_inference_steps']} steps (fast mode)")
-
-    def _apply_additional_loras(self, db_task_params: Dict[str, Any], generation_params: Dict[str, Any]):
-        """Apply additional LoRAs from task params (loras array or additional_loras dict)."""
-        # Handle array format: [{"path": "url", "scale": 0.8}]
-        loras = db_task_params.get("loras", [])
-        for lora in loras:
-            if isinstance(lora, dict):
-                path = lora.get("path", "")
-                scale = float(lora.get("scale", 1.0))
-                if path:
-                    if "additional_loras" not in generation_params:
-                        generation_params["additional_loras"] = {}
-                    generation_params["additional_loras"][path] = scale
-                    self._log_debug(f"Added LoRA from array: {path} @ {scale}")
-
-        # Handle dict format: {"url": scale}
-        additional_loras = db_task_params.get("additional_loras", {})
-        if additional_loras:
-            if "additional_loras" not in generation_params:
-                generation_params["additional_loras"] = {}
-            generation_params["additional_loras"].update(additional_loras)
-            self._log_debug(f"Added {len(additional_loras)} additional LoRAs from dict")

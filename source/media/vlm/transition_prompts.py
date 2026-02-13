@@ -1,4 +1,4 @@
-"""VLM prompt generation for transitions and single images."""
+"""Transition prompt generation using VLM for image-pair transitions."""
 
 import sys
 from pathlib import Path
@@ -7,7 +7,7 @@ from PIL import Image
 import torch
 
 from source.core.constants import BYTES_PER_GB
-from source.core.log import headless_logger
+from source.core.log import headless_logger, model_logger
 from source.media.vlm.image_prep import create_framed_vlm_image, create_labeled_debug_image
 from source.media.vlm.model import download_qwen_vlm_if_needed
 
@@ -17,7 +17,6 @@ def generate_transition_prompt(
     end_image_path: str,
     base_prompt: Optional[str] = None,
     device: str = "cuda",
-    dprint=print
 ) -> str:
     """
     Use QwenVLM to generate a descriptive prompt for the transition between two images.
@@ -29,7 +28,6 @@ def generate_transition_prompt(
         end_image_path: Path to the ending image
         base_prompt: Optional base prompt to append after VLM-generated description
         device: Device to run the model on ('cuda' or 'cpu')
-        dprint: Print function for logging
 
     Returns:
         Generated prompt describing the transition, with base_prompt appended if provided
@@ -45,7 +43,7 @@ def generate_transition_prompt(
         except ModuleNotFoundError:
             from Wan2GP.wan.utils.prompt_extend import QwenPromptExpander  # type: ignore
 
-        dprint(f"[VLM_TRANSITION] Generating transition prompt from {Path(start_image_path).name} \u2192 {Path(end_image_path).name}")
+        model_logger.debug(f"[VLM_TRANSITION] Generating transition prompt from {Path(start_image_path).name} -> {Path(end_image_path).name}")
 
         # Load both images
         start_img = Image.open(start_image_path).convert("RGB")
@@ -61,10 +59,10 @@ def generate_transition_prompt(
         # Initialize VLM with Qwen2.5-VL-7B
         local_model_path = wan_dir / "ckpts" / "Qwen2.5-VL-7B-Instruct"
 
-        dprint(f"[VLM_TRANSITION] Checking for model at {local_model_path}...")
+        model_logger.debug(f"[VLM_TRANSITION] Checking for model at {local_model_path}...")
         download_qwen_vlm_if_needed(local_model_path)
 
-        dprint(f"[VLM_TRANSITION] Initializing Qwen2.5-VL-7B-Instruct from local path: {local_model_path}")
+        model_logger.debug(f"[VLM_TRANSITION] Initializing Qwen2.5-VL-7B-Instruct from local path: {local_model_path}")
         extender = QwenPromptExpander(
             model_name=str(local_model_path),
             device=device,
@@ -99,7 +97,7 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
 
         system_prompt = "You are a video direction assistant. You MUST respond with EXACTLY THREE SENTENCES following this structure: 1) PRIMARY MOTION, 2) MOVING ELEMENTS, 3) MOTION DETAILS. Focus exclusively on what moves and changes, not static descriptions."
 
-        dprint(f"[VLM_TRANSITION] Running inference...")
+        model_logger.debug(f"[VLM_TRANSITION] Running inference...")
         result = extender.extend_with_img(
             prompt=query,
             system_prompt=system_prompt,
@@ -107,20 +105,18 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
         )
 
         vlm_prompt = result.prompt.strip()
-        dprint(f"[VLM_TRANSITION] Generated: {vlm_prompt}")
+        model_logger.debug(f"[VLM_TRANSITION] Generated: {vlm_prompt}")
 
         return vlm_prompt
 
     except (RuntimeError, ValueError, OSError, ImportError) as e:
-        dprint(f"[VLM_TRANSITION] ERROR: Failed to generate transition prompt: {e}")
-        import traceback
-        traceback.print_exc()
+        model_logger.error(f"[VLM_TRANSITION] ERROR: Failed to generate transition prompt: {e}", exc_info=True)
 
         if base_prompt and base_prompt.strip():
-            dprint(f"[VLM_TRANSITION] Falling back to base prompt: {base_prompt}")
+            model_logger.debug(f"[VLM_TRANSITION] Falling back to base prompt: {base_prompt}")
             return base_prompt
         else:
-            dprint(f"[VLM_TRANSITION] Falling back to generic prompt")
+            model_logger.debug(f"[VLM_TRANSITION] Falling back to generic prompt")
             return "cinematic transition"
 
 
@@ -128,7 +124,6 @@ def generate_transition_prompts_batch(
     image_pairs: List[Tuple[str, str]],
     base_prompts: List[Optional[str]],
     device: str = "cuda",
-    dprint=print,
     task_id: Optional[str] = None,
     upload_debug_images: bool = True
 ) -> List[str]:
@@ -142,7 +137,6 @@ def generate_transition_prompts_batch(
         image_pairs: List of (start_image_path, end_image_path) tuples
         base_prompts: List of base prompts to append (one per pair, can be None)
         device: Device to run the model on ('cuda' or 'cpu')
-        dprint: Print function for logging
         task_id: Optional task ID for organizing debug image uploads
         upload_debug_images: Whether to upload debug combined images to storage (default: True)
 
@@ -164,23 +158,23 @@ def generate_transition_prompts_batch(
 
         if torch.cuda.is_available():
             gpu_mem_before = torch.cuda.memory_allocated() / BYTES_PER_GB
-            dprint(f"[VLM_BATCH] GPU memory BEFORE: {gpu_mem_before:.2f} GB")
+            model_logger.debug(f"[VLM_BATCH] GPU memory BEFORE: {gpu_mem_before:.2f} GB")
 
-        dprint(f"[VLM_BATCH] Initializing Qwen2.5-VL-7B-Instruct for {len(image_pairs)} transitions...")
+        model_logger.debug(f"[VLM_BATCH] Initializing Qwen2.5-VL-7B-Instruct for {len(image_pairs)} transitions...")
 
         local_model_path = wan_dir / "ckpts" / "Qwen2.5-VL-7B-Instruct"
 
-        dprint(f"[VLM_BATCH] Checking for model at {local_model_path}...")
+        model_logger.debug(f"[VLM_BATCH] Checking for model at {local_model_path}...")
         download_qwen_vlm_if_needed(local_model_path)
 
-        dprint(f"[VLM_BATCH] Using local model from: {local_model_path}")
+        model_logger.debug(f"[VLM_BATCH] Using local model from: {local_model_path}")
         extender = QwenPromptExpander(
             model_name=str(local_model_path),
             device=device,
             is_vl=True
         )
 
-        dprint(f"[VLM_BATCH] Model loaded (initially on CPU)")
+        model_logger.debug(f"[VLM_BATCH] Model loaded (initially on CPU)")
 
         system_prompt = "You are a video direction assistant. You MUST respond with EXACTLY THREE SENTENCES following this structure: 1) PRIMARY MOTION, 2) MOVING ELEMENTS, 3) MOTION DETAILS. Focus exclusively on what moves and changes, not static descriptions."
 
@@ -188,13 +182,13 @@ def generate_transition_prompts_batch(
         prev_end_hash = None
         for i, ((start_path, end_path), base_prompt) in enumerate(zip(image_pairs, base_prompts)):
             try:
-                dprint(f"[VLM_BATCH] Processing pair {i+1}/{len(image_pairs)}: {Path(start_path).name} \u2192 {Path(end_path).name}")
+                model_logger.debug(f"[VLM_BATCH] Processing pair {i+1}/{len(image_pairs)}: {Path(start_path).name} -> {Path(end_path).name}")
 
                 # File debug logging
                 start_exists = Path(start_path).exists() if start_path else False
                 end_exists = Path(end_path).exists() if end_path else False
-                dprint(f"[VLM_FILE_DEBUG] Pair {i}: start={start_path} (exists={start_exists})")
-                dprint(f"[VLM_FILE_DEBUG] Pair {i}: end={end_path} (exists={end_exists})")
+                model_logger.debug(f"[VLM_FILE_DEBUG] Pair {i}: start={start_path} (exists={start_exists})")
+                model_logger.debug(f"[VLM_FILE_DEBUG] Pair {i}: end={end_path} (exists={end_exists})")
 
                 # Compute file hashes for identity verification
                 import hashlib
@@ -211,19 +205,19 @@ def generate_transition_prompts_batch(
                 if start_exists:
                     start_size = Path(start_path).stat().st_size
                     start_hash = get_file_hash(start_path)
-                    dprint(f"[VLM_FILE_DEBUG] Pair {i}: start file size={start_size} bytes, hash={start_hash}")
+                    model_logger.debug(f"[VLM_FILE_DEBUG] Pair {i}: start file size={start_size} bytes, hash={start_hash}")
                 if end_exists:
                     end_size = Path(end_path).stat().st_size
                     end_hash = get_file_hash(end_path)
-                    dprint(f"[VLM_FILE_DEBUG] Pair {i}: end file size={end_size} bytes, hash={end_hash}")
+                    model_logger.debug(f"[VLM_FILE_DEBUG] Pair {i}: end file size={end_size} bytes, hash={end_hash}")
 
                 # Boundary check
                 if i > 0 and prev_end_hash and start_hash:
                     if prev_end_hash == start_hash:
-                        dprint(f"[VLM_BOUNDARY_CHECK] \u2705 Pair {i} start matches Pair {i-1} end (hash={start_hash}) - boundary correct")
+                        model_logger.debug(f"[VLM_BOUNDARY_CHECK] Pair {i} start matches Pair {i-1} end (hash={start_hash}) - boundary correct")
                     else:
-                        dprint(f"[VLM_BOUNDARY_CHECK] \u274c MISMATCH! Pair {i} start (hash={start_hash}) != Pair {i-1} end (hash={prev_end_hash})")
-                        dprint(f"[VLM_BOUNDARY_CHECK] \u26a0\ufe0f This indicates images may be out of order or corrupted!")
+                        model_logger.warning(f"[VLM_BOUNDARY_CHECK] MISMATCH! Pair {i} start (hash={start_hash}) != Pair {i-1} end (hash={prev_end_hash})")
+                        model_logger.warning(f"[VLM_BOUNDARY_CHECK] This indicates images may be out of order or corrupted!")
 
                 prev_end_hash = end_hash
 
@@ -231,7 +225,7 @@ def generate_transition_prompts_batch(
                 start_img = Image.open(start_path).convert("RGB")
                 end_img = Image.open(end_path).convert("RGB")
 
-                dprint(f"[VLM_IMAGE_VERIFY] Pair {i}: start_img dimensions={start_img.size}, end_img dimensions={end_img.size}")
+                model_logger.debug(f"[VLM_IMAGE_VERIFY] Pair {i}: start_img dimensions={start_img.size}, end_img dimensions={end_img.size}")
 
                 import numpy as np
                 def get_image_stats(img):
@@ -242,8 +236,8 @@ def generate_transition_prompts_batch(
                     brightness = (avg_r + avg_g + avg_b) / 3
                     return f"RGB=({avg_r:.0f},{avg_g:.0f},{avg_b:.0f}) brightness={brightness:.0f} warmth={warmth:+.1f}%"
 
-                dprint(f"[VLM_IMAGE_CONTENT] Pair {i} START: {get_image_stats(start_img)}")
-                dprint(f"[VLM_IMAGE_CONTENT] Pair {i} END: {get_image_stats(end_img)}")
+                model_logger.debug(f"[VLM_IMAGE_CONTENT] Pair {i} START: {get_image_stats(start_img)}")
+                model_logger.debug(f"[VLM_IMAGE_CONTENT] Pair {i} END: {get_image_stats(end_img)}")
 
                 combined_img = create_framed_vlm_image(start_img, end_img)
 
@@ -258,15 +252,15 @@ def generate_transition_prompts_batch(
                     labeled_debug_img = create_labeled_debug_image(start_img, end_img, pair_index=i)
                     debug_path = debug_dir / f"vlm_combined_pair{i}.jpg"
                     labeled_debug_img.save(str(debug_path), quality=95)
-                    dprint(f"[VLM_DEBUG_SAVE] Saved labeled debug image for pair {i} to: {debug_path}")
+                    model_logger.debug(f"[VLM_DEBUG_SAVE] Saved labeled debug image for pair {i} to: {debug_path}")
 
                     start_debug_path = debug_dir / f"vlm_pair{i}_LEFT_start.jpg"
                     end_debug_path = debug_dir / f"vlm_pair{i}_RIGHT_end.jpg"
                     start_img.save(str(start_debug_path), quality=95)
                     end_img.save(str(end_debug_path), quality=95)
-                    dprint(f"[VLM_DEBUG_SAVE] Saved individual images: {start_debug_path.name}, {end_debug_path.name}")
+                    model_logger.debug(f"[VLM_DEBUG_SAVE] Saved individual images: {start_debug_path.name}, {end_debug_path.name}")
                 except OSError as e_save:
-                    dprint(f"[VLM_DEBUG_SAVE] Could not save debug image: {e_save}")
+                    model_logger.debug(f"[VLM_DEBUG_SAVE] Could not save debug image: {e_save}")
 
                 # Upload debug images
                 if upload_debug_images and task_id and debug_path and debug_path.exists():
@@ -278,29 +272,28 @@ def generate_transition_prompts_batch(
                             debug_path,
                             task_id,
                             upload_filename,
-                            dprint=dprint
                         )
                         if upload_url:
-                            dprint(f"[VLM_DEBUG_UPLOAD] \u2705 Pair {i} COMBINED (what VLM sees): {upload_url}")
+                            model_logger.debug(f"[VLM_DEBUG_UPLOAD] Pair {i} COMBINED (what VLM sees): {upload_url}")
                         else:
-                            dprint(f"[VLM_DEBUG_UPLOAD] \u274c Failed to upload combined image for pair {i}")
+                            model_logger.warning(f"[VLM_DEBUG_UPLOAD] Failed to upload combined image for pair {i}")
 
                         if start_debug_path and start_debug_path.exists():
                             start_url = upload_intermediate_file_to_storage(
-                                start_debug_path, task_id, f"vlm_debug_pair{i}_LEFT.jpg", dprint=dprint
+                                start_debug_path, task_id, f"vlm_debug_pair{i}_LEFT.jpg"
                             )
                             if start_url:
-                                dprint(f"[VLM_DEBUG_UPLOAD] \u2705 Pair {i} LEFT (start image): {start_url}")
+                                model_logger.debug(f"[VLM_DEBUG_UPLOAD] Pair {i} LEFT (start image): {start_url}")
 
                         if end_debug_path and end_debug_path.exists():
                             end_url = upload_intermediate_file_to_storage(
-                                end_debug_path, task_id, f"vlm_debug_pair{i}_RIGHT.jpg", dprint=dprint
+                                end_debug_path, task_id, f"vlm_debug_pair{i}_RIGHT.jpg"
                             )
                             if end_url:
-                                dprint(f"[VLM_DEBUG_UPLOAD] \u2705 Pair {i} RIGHT (end image): {end_url}")
+                                model_logger.debug(f"[VLM_DEBUG_UPLOAD] Pair {i} RIGHT (end image): {end_url}")
 
                     except (OSError, RuntimeError, ValueError) as e_upload:
-                        dprint(f"[VLM_DEBUG_UPLOAD] \u274c Failed to upload debug images for pair {i}: {e_upload}")
+                        model_logger.warning(f"[VLM_DEBUG_UPLOAD] Failed to upload debug images for pair {i}: {e_upload}")
 
                 base_prompt_text = base_prompt if base_prompt and base_prompt.strip() else "the objects/people inside the scene move excitingly and things transform or shift with the camera"
 
@@ -328,7 +321,7 @@ Examples of MOTION-FOCUSED descriptions:
 
 Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_prompt_text}'"""
 
-                dprint(f"[VLM_QUERY_DEBUG] Pair {i}: base_prompt_text='{base_prompt_text[:100]}...'")
+                model_logger.debug(f"[VLM_QUERY_DEBUG] Pair {i}: base_prompt_text='{base_prompt_text[:100]}...'")
 
                 result = extender.extend_with_img(
                     prompt=query,
@@ -337,18 +330,18 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
                 )
 
                 vlm_prompt = result.prompt.strip()
-                dprint(f"[VLM_BATCH] Generated: {vlm_prompt}")
+                model_logger.debug(f"[VLM_BATCH] Generated: {vlm_prompt}")
 
                 results.append(vlm_prompt)
 
             except (RuntimeError, ValueError, OSError) as e:
-                dprint(f"[VLM_BATCH] ERROR processing pair {i+1}: {e}")
+                model_logger.error(f"[VLM_BATCH] ERROR processing pair {i+1}: {e}")
                 if base_prompt and base_prompt.strip():
                     results.append(base_prompt)
                 else:
                     results.append("cinematic transition")
 
-        dprint(f"[VLM_BATCH] Completed {len(results)}/{len(image_pairs)} prompts")
+        model_logger.debug(f"[VLM_BATCH] Completed {len(results)}/{len(image_pairs)} prompts")
 
         if torch.cuda.is_available():
             gpu_mem_before_cleanup = torch.cuda.memory_allocated() / BYTES_PER_GB
@@ -379,265 +372,8 @@ Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_promp
         return results
 
     except (RuntimeError, ValueError, OSError, ImportError) as e:
-        dprint(f"[VLM_BATCH] CRITICAL ERROR: {e}")
-        import traceback
-        traceback.print_exc()
+        model_logger.error(f"[VLM_BATCH] CRITICAL ERROR: {e}", exc_info=True)
         return [bp if bp and bp.strip() else "cinematic transition" for bp in base_prompts]
-
-
-def generate_single_image_prompt(
-    image_path: str,
-    base_prompt: Optional[str] = None,
-    device: str = "cuda",
-    dprint=print
-) -> str:
-    """
-    Use QwenVLM to generate a descriptive prompt based on a single image.
-
-    This is used for single-image video generation where there's no transition
-    between images - instead, we describe the image and suggest natural motion.
-
-    Args:
-        image_path: Path to the image
-        base_prompt: Optional base prompt to incorporate
-        device: Device to run the model on ('cuda' or 'cpu')
-        dprint: Print function for logging
-
-    Returns:
-        Generated prompt describing the image and suggesting motion
-    """
-    try:
-        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        from Wan2GP.shared.utils.prompt_extend import QwenPromptExpander
-
-        dprint(f"[VLM_SINGLE] Generating prompt for single image: {Path(image_path).name}")
-
-        img = Image.open(image_path).convert("RGB")
-
-        local_model_path = wan_dir / "ckpts" / "Qwen2.5-VL-7B-Instruct"
-
-        dprint(f"[VLM_SINGLE] Checking for model at {local_model_path}...")
-        download_qwen_vlm_if_needed(local_model_path)
-
-        dprint(f"[VLM_SINGLE] Initializing Qwen2.5-VL-7B-Instruct from local path: {local_model_path}")
-        extender = QwenPromptExpander(
-            model_name=str(local_model_path),
-            device=device,
-            is_vl=True
-        )
-
-        base_prompt_text = base_prompt if base_prompt and base_prompt.strip() else "the objects/people inside the scene move excitingly and things transform or shift with the camera"
-
-        query = f"""You are viewing a single image that will be the starting frame of a video sequence.
-
-Your goal is to create a THREE-SENTENCE prompt that describes the image and suggests NATURAL MOTION based on the user's description: '{base_prompt_text}'
-
-FOCUS ON MOTION: Describe what's in the image and how things could naturally move, animate, or change. Everything should suggest dynamic motion from this starting point.
-
-YOUR RESPONSE MUST FOLLOW THIS EXACT STRUCTURE:
-
-SENTENCE 1 (SCENE & CAMERA): Describe the scene and suggest camera movement (pan, zoom, tilt, tracking shot, etc.). What would a cinematographer do?
-
-SENTENCE 2 (SUBJECT MOTION): Describe the main subjects and how they could naturally move or animate. People breathe, blink, shift weight; animals move; plants sway; water flows.
-
-SENTENCE 3 (ENVIRONMENTAL DYNAMICS): Describe ambient motion - wind effects, lighting changes, particles, atmospheric effects, subtle movements that bring the scene to life.
-
-Examples of MOTION-FOCUSED single-image descriptions:
-
-- "The camera slowly pushes forward through the misty forest as the early morning light filters through the canopy. The tall pine trees sway gently in the breeze while a deer in the clearing lifts its head alertly and flicks its ears. Dust motes drift lazily through the golden light beams and fallen leaves rustle and tumble across the forest floor."
-
-- "The camera tracks slowly around the woman as she stands at the window gazing out at the city. She shifts her weight slightly and turns her head, her hair catching the warm light from the sunset outside. The curtains billow softly in a gentle breeze while city lights begin twinkling on in the darkening skyline."
-
-- "The camera zooms gradually into the vintage car parked on the empty desert road as heat waves shimmer off the asphalt. Chrome details on the car glint and sparkle as the harsh sun shifts position overhead. Tumbleweeds roll slowly across the cracked pavement while sand particles drift on the hot wind."
-
-Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_prompt_text}'"""
-
-        system_prompt = "You are a video direction assistant. You MUST respond with EXACTLY THREE SENTENCES following this structure: 1) SCENE & CAMERA, 2) SUBJECT MOTION, 3) ENVIRONMENTAL DYNAMICS. Focus on natural motion that could emerge from this single image."
-
-        dprint(f"[VLM_SINGLE] Running inference...")
-        result = extender.extend_with_img(
-            prompt=query,
-            system_prompt=system_prompt,
-            image=img
-        )
-
-        vlm_prompt = result.prompt.strip()
-        dprint(f"[VLM_SINGLE] Generated: {vlm_prompt}")
-
-        # Cleanup
-        try:
-            del extender.model
-            del extender.processor
-            del extender
-        except AttributeError as e:
-            headless_logger.warning(f"[VLM_SINGLE] Could not delete VLM objects during cleanup: {e}")
-
-        import gc
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        return vlm_prompt
-
-    except (RuntimeError, ValueError, OSError, ImportError) as e:
-        dprint(f"[VLM_SINGLE] ERROR: Failed to generate single image prompt: {e}")
-        import traceback
-        traceback.print_exc()
-
-        if base_prompt and base_prompt.strip():
-            dprint(f"[VLM_SINGLE] Falling back to base prompt: {base_prompt}")
-            return base_prompt
-        else:
-            dprint(f"[VLM_SINGLE] Falling back to generic prompt")
-            return "cinematic video"
-
-
-def generate_single_image_prompts_batch(
-    image_paths: List[str],
-    base_prompts: List[Optional[str]],
-    device: str = "cuda",
-    dprint=print
-) -> List[str]:
-    """
-    Batch generate prompts for multiple single images.
-
-    This is more efficient than calling generate_single_image_prompt() multiple times,
-    because it loads the VLM model once and reuses it for all images.
-
-    Args:
-        image_paths: List of image paths
-        base_prompts: List of base prompts (one per image, can be None)
-        device: Device to run the model on ('cuda' or 'cpu')
-        dprint: Print function for logging
-
-    Returns:
-        List of generated prompts (one per image)
-    """
-    if len(image_paths) != len(base_prompts):
-        raise ValueError(f"image_paths and base_prompts must have same length ({len(image_paths)} != {len(base_prompts)})")
-
-    if not image_paths:
-        return []
-
-    try:
-        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        if str(wan_dir) not in sys.path:
-            sys.path.insert(0, str(wan_dir))
-
-        from Wan2GP.shared.utils.prompt_extend import QwenPromptExpander
-
-        if torch.cuda.is_available():
-            gpu_mem_before = torch.cuda.memory_allocated() / BYTES_PER_GB
-            dprint(f"[VLM_SINGLE_BATCH] GPU memory BEFORE: {gpu_mem_before:.2f} GB")
-
-        dprint(f"[VLM_SINGLE_BATCH] Initializing Qwen2.5-VL-7B-Instruct for {len(image_paths)} single images...")
-
-        local_model_path = wan_dir / "ckpts" / "Qwen2.5-VL-7B-Instruct"
-
-        dprint(f"[VLM_SINGLE_BATCH] Checking for model at {local_model_path}...")
-        download_qwen_vlm_if_needed(local_model_path)
-
-        dprint(f"[VLM_SINGLE_BATCH] Using local model from: {local_model_path}")
-        extender = QwenPromptExpander(
-            model_name=str(local_model_path),
-            device=device,
-            is_vl=True
-        )
-
-        dprint(f"[VLM_SINGLE_BATCH] Model loaded")
-
-        system_prompt = "You are a video direction assistant. You MUST respond with EXACTLY THREE SENTENCES following this structure: 1) SCENE & CAMERA, 2) SUBJECT MOTION, 3) ENVIRONMENTAL DYNAMICS. Focus on natural motion that could emerge from this single image."
-
-        results = []
-        for i, (image_path, base_prompt) in enumerate(zip(image_paths, base_prompts)):
-            try:
-                dprint(f"[VLM_SINGLE_BATCH] Processing image {i+1}/{len(image_paths)}: {Path(image_path).name}")
-
-                img = Image.open(image_path).convert("RGB")
-                dprint(f"[VLM_SINGLE_BATCH] Image {i}: dimensions={img.size}")
-
-                base_prompt_text = base_prompt if base_prompt and base_prompt.strip() else "the objects/people inside the scene move excitingly and things transform or shift with the camera"
-
-                query = f"""You are viewing a single image that will be the starting frame of a video sequence.
-
-Your goal is to create a THREE-SENTENCE prompt that describes the image and suggests NATURAL MOTION based on the user's description: '{base_prompt_text}'
-
-FOCUS ON MOTION: Describe what's in the image and how things could naturally move, animate, or change. Everything should suggest dynamic motion from this starting point.
-
-YOUR RESPONSE MUST FOLLOW THIS EXACT STRUCTURE:
-
-SENTENCE 1 (SCENE & CAMERA): Describe the scene and suggest camera movement (pan, zoom, tilt, tracking shot, etc.). What would a cinematographer do?
-
-SENTENCE 2 (SUBJECT MOTION): Describe the main subjects and how they could naturally move or animate. People breathe, blink, shift weight; animals move; plants sway; water flows.
-
-SENTENCE 3 (ENVIRONMENTAL DYNAMICS): Describe ambient motion - wind effects, lighting changes, particles, atmospheric effects, subtle movements that bring the scene to life.
-
-Examples of MOTION-FOCUSED single-image descriptions:
-
-- "The camera slowly pushes forward through the misty forest as the early morning light filters through the canopy. The tall pine trees sway gently in the breeze while a deer in the clearing lifts its head alertly and flicks its ears. Dust motes drift lazily through the golden light beams and fallen leaves rustle and tumble across the forest floor."
-
-- "The camera tracks slowly around the woman as she stands at the window gazing out at the city. She shifts her weight slightly and turns her head, her hair catching the warm light from the sunset outside. The curtains billow softly in a gentle breeze while city lights begin twinkling on in the darkening skyline."
-
-- "The camera zooms gradually into the vintage car parked on the empty desert road as heat waves shimmer off the asphalt. Chrome details on the car glint and sparkle as the harsh sun shifts position overhead. Tumbleweeds roll slowly across the cracked pavement while sand particles drift on the hot wind."
-
-Now create your THREE-SENTENCE MOTION-FOCUSED description based on: '{base_prompt_text}'"""
-
-                result = extender.extend_with_img(
-                    prompt=query,
-                    system_prompt=system_prompt,
-                    image=img
-                )
-
-                vlm_prompt = result.prompt.strip()
-                dprint(f"[VLM_SINGLE_BATCH] Generated: {vlm_prompt}")
-
-                results.append(vlm_prompt)
-
-            except (RuntimeError, ValueError, OSError) as e:
-                dprint(f"[VLM_SINGLE_BATCH] ERROR processing image {i+1}: {e}")
-                if base_prompt and base_prompt.strip():
-                    results.append(base_prompt)
-                else:
-                    results.append("cinematic video")
-
-        dprint(f"[VLM_SINGLE_BATCH] Completed {len(results)}/{len(image_paths)} prompts")
-
-        if torch.cuda.is_available():
-            gpu_mem_before_cleanup = torch.cuda.memory_allocated() / BYTES_PER_GB
-            headless_logger.debug(f"[VLM_SINGLE_CLEANUP] GPU memory BEFORE cleanup: {gpu_mem_before_cleanup:.2f} GB")
-
-        headless_logger.debug(f"[VLM_SINGLE_CLEANUP] Cleaning up VLM model and processor...")
-        try:
-            del extender.model
-            del extender.processor
-            del extender
-            headless_logger.essential(f"[VLM_SINGLE_CLEANUP] Successfully deleted VLM objects")
-        except AttributeError as e:
-            headless_logger.warning(f"[VLM_SINGLE_CLEANUP] Error during deletion: {e}")
-
-        import gc
-        collected = gc.collect()
-        headless_logger.debug(f"[VLM_SINGLE_CLEANUP] Garbage collected {collected} objects")
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            gpu_mem_after = torch.cuda.memory_allocated() / BYTES_PER_GB
-            gpu_freed = gpu_mem_before_cleanup - gpu_mem_after
-            headless_logger.debug(f"[VLM_SINGLE_CLEANUP] GPU memory AFTER cleanup: {gpu_mem_after:.2f} GB")
-            headless_logger.debug(f"[VLM_SINGLE_CLEANUP] GPU memory freed: {gpu_freed:.2f} GB")
-
-        headless_logger.essential(f"[VLM_SINGLE_CLEANUP] VLM cleanup complete")
-
-        return results
-
-    except (RuntimeError, ValueError, OSError, ImportError) as e:
-        dprint(f"[VLM_SINGLE_BATCH] CRITICAL ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-        return [bp if bp and bp.strip() else "cinematic video" for bp in base_prompts]
 
 
 def test_vlm_transition():

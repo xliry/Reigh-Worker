@@ -4,22 +4,27 @@ Task dependency, orchestrator child management, and cross-task queries.
 import os
 import json
 import time
-import traceback
-
 import httpx
 from postgrest.exceptions import APIError
 
 from source.core.log import headless_logger
 
+__all__ = [
+    "get_task_dependency",
+    "get_orchestrator_child_tasks",
+    "get_task_current_status",
+    "cancel_orchestrator_children",
+    "cleanup_duplicate_child_tasks",
+    "get_predecessor_output_via_edge_function",
+    "get_completed_segment_outputs_for_stitch",
+]
+
 from . import config as _cfg
 from .config import (
-    STATUS_COMPLETE,
-    dprint,
-)
+    STATUS_COMPLETE)
 from .edge_helpers import _call_edge_function_with_retry
-from .task_completion import update_task_status
+from .task_status import update_task_status
 from .task_polling import get_task_output_location_from_db
-
 
 def get_task_dependency(task_id: str, max_retries: int = 3, retry_delay: float = 0.5) -> str | None:
     """
@@ -36,7 +41,7 @@ def get_task_dependency(task_id: str, max_retries: int = 3, retry_delay: float =
     Returns:
         Dependency task ID or None if no dependency
     """
-    dprint(f"Fetching dependency for task: {task_id}")
+    headless_logger.debug(f"Fetching dependency for task: {task_id}")
 
     # Build edge function URL
     edge_url = (
@@ -57,7 +62,7 @@ def get_task_dependency(task_id: str, max_retries: int = 3, retry_delay: float =
                     if "0 rows" in str(e) and attempt < max_retries - 1:
                         time.sleep(retry_delay)
                         continue
-                    dprint(f"Error fetching dependant_on for task {task_id}: {e}")
+                    headless_logger.debug(f"Error fetching dependant_on for task {task_id}: {e}")
                     return None
         return None
 
@@ -85,10 +90,9 @@ def get_task_dependency(task_id: str, max_retries: int = 3, retry_delay: float =
         data = resp.json()
         return data.get("dependant_on")
     elif edge_error:
-        dprint(f"Error fetching dependency for {task_id}: {edge_error}")
+        headless_logger.debug(f"Error fetching dependency for {task_id}: {edge_error}")
 
     return None
-
 
 def get_orchestrator_child_tasks(orchestrator_task_id: str) -> dict:
     """
@@ -97,7 +101,7 @@ def get_orchestrator_child_tasks(orchestrator_task_id: str) -> dict:
     'join_clips_orchestrator', 'join_final_stitch'.
     """
     empty_result = {'segments': [], 'stitch': [], 'join_clips_segment': [], 'join_clips_orchestrator': [], 'join_final_stitch': []}
-    dprint(f"Fetching child tasks for orchestrator: {orchestrator_task_id}")
+    headless_logger.debug(f"Fetching child tasks for orchestrator: {orchestrator_task_id}")
 
     # Build edge function URL
     edge_url = (
@@ -167,9 +171,9 @@ def get_orchestrator_child_tasks(orchestrator_task_id: str) -> dict:
                 tasks = data.get("tasks", [])
                 return _categorize_tasks(tasks)
             elif edge_error:
-                dprint(f"get-orchestrator-children failed: {edge_error}")
+                headless_logger.debug(f"get-orchestrator-children failed: {edge_error}")
         except (httpx.HTTPError, OSError, ValueError) as e:
-            dprint(f"Error calling get-orchestrator-children: {e}")
+            headless_logger.debug(f"Error calling get-orchestrator-children: {e}")
 
     # Fallback to direct query if edge function not available or failed
     if not _cfg.SUPABASE_CLIENT:
@@ -188,10 +192,8 @@ def get_orchestrator_child_tasks(orchestrator_task_id: str) -> dict:
         return empty_result
 
     except (APIError, RuntimeError, ValueError, OSError) as e:
-        dprint(f"Error querying Supabase for orchestrator child tasks {orchestrator_task_id}: {e}")
-        traceback.print_exc()
+        headless_logger.debug(f"Error querying Supabase for orchestrator child tasks {orchestrator_task_id}: {e}", exc_info=True)
         return empty_result
-
 
 def get_task_current_status(task_id: str) -> str | None:
     """
@@ -223,16 +225,15 @@ def get_task_current_status(task_id: str) -> str | None:
                 context_id=task_id,
                 timeout=15,
                 max_retries=2,
-                method="POST",
-            )
+                method="POST")
 
             if resp and resp.status_code == 200:
                 data = resp.json()
                 return data.get("status")
             elif edge_error:
-                dprint(f"[GET_TASK_STATUS] Edge function failed for {task_id}: {edge_error}")
+                headless_logger.debug(f"[GET_TASK_STATUS] Edge function failed for {task_id}: {edge_error}")
         except (httpx.HTTPError, OSError, ValueError) as e:
-            dprint(f"[GET_TASK_STATUS] Error calling get-task-status for {task_id}: {e}")
+            headless_logger.debug(f"[GET_TASK_STATUS] Error calling get-task-status for {task_id}: {e}")
 
     # Fallback to direct query if edge function not available or failed
     if _cfg.SUPABASE_CLIENT:
@@ -241,10 +242,9 @@ def get_task_current_status(task_id: str) -> str | None:
             if resp.data:
                 return resp.data.get("status")
         except (APIError, RuntimeError, ValueError, OSError) as e:
-            dprint(f"[GET_TASK_STATUS] Direct query failed for {task_id}: {e}")
+            headless_logger.debug(f"[GET_TASK_STATUS] Direct query failed for {task_id}: {e}")
 
     return None
-
 
 def cancel_orchestrator_children(orchestrator_task_id: str, reason: str = "Orchestrator cancelled") -> int:
     """
@@ -271,7 +271,7 @@ def cancel_orchestrator_children(orchestrator_task_id: str, reason: str = "Orche
             all_children.extend(category)
 
     if not all_children:
-        dprint(f"[CANCEL_CHILDREN] No child tasks found for orchestrator {orchestrator_task_id}")
+        headless_logger.debug(f"[CANCEL_CHILDREN] No child tasks found for orchestrator {orchestrator_task_id}")
         return 0
 
     cancelled_count = 0
@@ -280,10 +280,10 @@ def cancel_orchestrator_children(orchestrator_task_id: str, reason: str = "Orche
         child_status = (child.get('status') or '').lower()
 
         if child_status in TERMINAL_STATUSES:
-            dprint(f"[CANCEL_CHILDREN] Skipping child {child_id} (already {child_status})")
+            headless_logger.debug(f"[CANCEL_CHILDREN] Skipping child {child_id} (already {child_status})")
             continue
 
-        dprint(f"[CANCEL_CHILDREN] Cancelling child task {child_id} (was {child_status})")
+        headless_logger.debug(f"[CANCEL_CHILDREN] Cancelling child task {child_id} (was {child_status})")
         try:
             update_task_status(child_id, "Cancelled", output_location=reason)
             cancelled_count += 1
@@ -293,10 +293,9 @@ def cancel_orchestrator_children(orchestrator_task_id: str, reason: str = "Orche
     if cancelled_count > 0:
         headless_logger.essential(f"[CANCEL_CHILDREN] Cancelled {cancelled_count}/{len(all_children)} child tasks for orchestrator {orchestrator_task_id}", task_id=orchestrator_task_id)
     else:
-        dprint(f"[CANCEL_CHILDREN] All {len(all_children)} children already in terminal state for orchestrator {orchestrator_task_id}")
+        headless_logger.debug(f"[CANCEL_CHILDREN] All {len(all_children)} children already in terminal state for orchestrator {orchestrator_task_id}")
 
     return cancelled_count
-
 
 def cleanup_duplicate_child_tasks(orchestrator_task_id: str, expected_segments: int) -> dict:
     """
@@ -323,7 +322,7 @@ def cleanup_duplicate_child_tasks(orchestrator_task_id: str, expected_segments: 
                 existing = segment_by_index[segment_idx]
                 duplicate_id = segment['id']
 
-                dprint(f"[IDEMPOTENCY] Found duplicate segment {segment_idx}: keeping {existing['id']}, removing {duplicate_id}")
+                headless_logger.debug(f"[IDEMPOTENCY] Found duplicate segment {segment_idx}: keeping {existing['id']}, removing {duplicate_id}")
 
                 # Remove the duplicate
                 if _delete_task_by_id(duplicate_id):
@@ -339,7 +338,7 @@ def cleanup_duplicate_child_tasks(orchestrator_task_id: str, expected_segments: 
             stitch_sorted = sorted(stitch_tasks, key=lambda x: x.get('created_at', ''))
             for stitch in stitch_sorted[1:]:  # Remove all but first
                 duplicate_id = stitch['id']
-                dprint(f"[IDEMPOTENCY] Found duplicate stitch task: removing {duplicate_id}")
+                headless_logger.debug(f"[IDEMPOTENCY] Found duplicate stitch task: removing {duplicate_id}")
 
                 if _delete_task_by_id(duplicate_id):
                     cleanup_summary['duplicate_stitch_removed'] += 1
@@ -348,11 +347,9 @@ def cleanup_duplicate_child_tasks(orchestrator_task_id: str, expected_segments: 
 
     except (ValueError, KeyError, TypeError) as e:
         cleanup_summary['errors'].append(f"Cleanup error: {str(e)}")
-        dprint(f"Error during duplicate cleanup: {e}")
-        traceback.print_exc()
+        headless_logger.debug(f"Error during duplicate cleanup: {e}", exc_info=True)
 
     return cleanup_summary
-
 
 def _delete_task_by_id(task_id: str) -> bool:
     """Helper to delete a task by ID from Supabase. Returns True if successful."""
@@ -364,9 +361,8 @@ def _delete_task_by_id(task_id: str) -> bool:
         response = _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME).delete().eq("id", task_id).execute()
         return len(response.data) > 0 if response.data else False
     except (APIError, RuntimeError, ValueError, OSError) as e:
-        dprint(f"Error deleting Supabase task {task_id}: {e}")
+        headless_logger.debug(f"Error deleting Supabase task {task_id}: {e}")
         return False
-
 
 def get_predecessor_output_via_edge_function(task_id: str) -> tuple[str | None, str | None]:
     """
@@ -389,18 +385,18 @@ def get_predecessor_output_via_edge_function(task_id: str) -> tuple[str | None, 
     edge_url = f"{_cfg.SUPABASE_URL.rstrip('/')}/functions/v1/get-predecessor-output"
 
     try:
-        dprint(f"Calling Edge Function: {edge_url} for task {task_id}")
+        headless_logger.debug(f"Calling Edge Function: {edge_url} for task {task_id}")
         headers = {
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {_cfg.SUPABASE_ACCESS_TOKEN}'
         }
 
         resp = httpx.post(edge_url, json={"task_id": task_id}, headers=headers, timeout=15)
-        dprint(f"Edge Function response status: {resp.status_code}")
+        headless_logger.debug(f"Edge Function response status: {resp.status_code}")
 
         if resp.status_code == 200:
             result = resp.json()
-            dprint(f"Edge Function result: {result}")
+            headless_logger.debug(f"Edge Function result: {result}")
 
             if result is None:
                 # No dependency
@@ -411,10 +407,10 @@ def get_predecessor_output_via_edge_function(task_id: str) -> tuple[str | None, 
             return predecessor_id, output_location
 
         elif resp.status_code == 404:
-            dprint(f"Edge Function: Task {task_id} not found")
+            headless_logger.debug(f"Edge Function: Task {task_id} not found")
             return None, None
         else:
-            dprint(f"Edge Function returned {resp.status_code}: {resp.text}. Falling back to direct queries.")
+            headless_logger.debug(f"Edge Function returned {resp.status_code}: {resp.text}. Falling back to direct queries.")
             # Fall back to separate calls
             predecessor_id = get_task_dependency(task_id)
             if predecessor_id:
@@ -423,14 +419,13 @@ def get_predecessor_output_via_edge_function(task_id: str) -> tuple[str | None, 
             return None, None
 
     except (httpx.HTTPError, OSError, ValueError) as e_edge:
-        dprint(f"Edge Function call failed: {e_edge}. Falling back to direct queries.")
+        headless_logger.debug(f"Edge Function call failed: {e_edge}. Falling back to direct queries.")
         # Fall back to separate calls
         predecessor_id = get_task_dependency(task_id)
         if predecessor_id:
             output_location = get_task_output_location_from_db(predecessor_id)
             return predecessor_id, output_location
         return None, None
-
 
 def get_completed_segment_outputs_for_stitch(run_id: str, project_id: str | None = None) -> list:
     """Gets completed travel_segment outputs for a given run_id for stitching from Supabase."""
@@ -440,7 +435,7 @@ def get_completed_segment_outputs_for_stitch(run_id: str, project_id: str | None
 
     edge_url = f"{_cfg.SUPABASE_URL.rstrip('/')}/functions/v1/get-completed-segments"
     try:
-        dprint(f"Calling Edge Function: {edge_url} for run_id {run_id}, project_id {project_id}")
+        headless_logger.debug(f"Calling Edge Function: {edge_url} for run_id {run_id}, project_id {project_id}")
         headers = {
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {_cfg.SUPABASE_ACCESS_TOKEN}'
@@ -455,9 +450,9 @@ def get_completed_segment_outputs_for_stitch(run_id: str, project_id: str | None
             sorted_results = sorted(results, key=lambda x: x['segment_index'])
             return [(r['segment_index'], r['output_location']) for r in sorted_results]
         else:
-            dprint(f"Edge Function returned {resp.status_code}: {resp.text}. Falling back to direct query.")
+            headless_logger.debug(f"Edge Function returned {resp.status_code}: {resp.text}. Falling back to direct query.")
     except (httpx.HTTPError, OSError, ValueError) as e:
-        dprint(f"Edge Function failed: {e}. Falling back to direct query.")
+        headless_logger.debug(f"Edge Function failed: {e}. Falling back to direct query.")
 
     # Fallback to direct query
     if not _cfg.SUPABASE_CLIENT:
@@ -469,8 +464,8 @@ def get_completed_segment_outputs_for_stitch(run_id: str, project_id: str | None
         debug_resp = _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME).select("id, task_type, status, params, output_location")\
             .eq("status", STATUS_COMPLETE).execute()
 
-        dprint(f"[DEBUG_STITCH] Looking for run_id: '{run_id}' (type: {type(run_id)})")
-        dprint(f"[DEBUG_STITCH] Total completed tasks in DB: {len(debug_resp.data) if debug_resp.data else 0}")
+        headless_logger.debug(f"[DEBUG_STITCH] Looking for run_id: '{run_id}' (type: {type(run_id)})")
+        headless_logger.debug(f"[DEBUG_STITCH] Total completed tasks in DB: {len(debug_resp.data) if debug_resp.data else 0}")
 
         travel_segment_count = 0
         matching_run_id_count = 0
@@ -484,16 +479,16 @@ def get_completed_segment_outputs_for_stitch(run_id: str, project_id: str | None
                     try:
                         params_obj = params_raw if isinstance(params_raw, dict) else json.loads(params_raw)
                         task_run_id = params_obj.get("orchestrator_run_id")
-                        dprint(f"[DEBUG_STITCH] Found travel_segment task {task.get('id')}: orchestrator_run_id='{task_run_id}' (type: {type(task_run_id)}), segment_index={params_obj.get('segment_index')}, output_location={task.get('output_location', 'None')}")
+                        headless_logger.debug(f"[DEBUG_STITCH] Found travel_segment task {task.get('id')}: orchestrator_run_id='{task_run_id}' (type: {type(task_run_id)}), segment_index={params_obj.get('segment_index')}, output_location={task.get('output_location', 'None')}")
 
                         if str(task_run_id) == str(run_id):
                             matching_run_id_count += 1
-                            dprint(f"[DEBUG_STITCH] MATCH FOUND! Task {task.get('id')} matches run_id {run_id}")
+                            headless_logger.debug(f"[DEBUG_STITCH] MATCH FOUND! Task {task.get('id')} matches run_id {run_id}")
                     except (json.JSONDecodeError, ValueError) as e_debug:
-                        dprint(f"[DEBUG_STITCH] Error parsing params for task {task.get('id')}: {e_debug}")
+                        headless_logger.debug(f"[DEBUG_STITCH] Error parsing params for task {task.get('id')}: {e_debug}")
 
-        dprint(f"[DEBUG_STITCH] Travel_segment tasks found: {travel_segment_count}")
-        dprint(f"[DEBUG_STITCH] Tasks matching run_id '{run_id}': {matching_run_id_count}")
+        headless_logger.debug(f"[DEBUG_STITCH] Travel_segment tasks found: {travel_segment_count}")
+        headless_logger.debug(f"[DEBUG_STITCH] Tasks matching run_id '{run_id}': {matching_run_id_count}")
 
         # Now do the actual query
         sel_resp = _cfg.SUPABASE_CLIENT.table(_cfg.PG_TABLE_NAME).select("params, output_location")\
@@ -517,12 +512,11 @@ def get_completed_segment_outputs_for_stitch(run_id: str, project_id: str | None
                     seg_idx = params_obj.get("segment_index")
                     output_loc = row.get("output_location")
                     results.append((seg_idx, output_loc))
-                    dprint(f"[DEBUG_STITCH] Added to results: segment_index={seg_idx}, output_location={output_loc}")
+                    headless_logger.debug(f"[DEBUG_STITCH] Added to results: segment_index={seg_idx}, output_location={output_loc}")
 
         sorted_results = sorted(results, key=lambda x: x[0] if x[0] is not None else 0)
-        dprint(f"[DEBUG_STITCH] Final sorted results: {sorted_results}")
+        headless_logger.debug(f"[DEBUG_STITCH] Final sorted results: {sorted_results}")
         return sorted_results
     except (APIError, RuntimeError, ValueError, OSError) as e_sel:
-        dprint(f"Stitch Supabase: Direct select failed: {e_sel}")
-        traceback.print_exc()
+        headless_logger.debug(f"Stitch Supabase: Direct select failed: {e_sel}", exc_info=True)
         return []

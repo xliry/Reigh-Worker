@@ -18,6 +18,11 @@ from .generation import GenerationConfig
 from .phase import PhaseConfig
 from .task import TaskConfig
 from .structure_guidance import StructureGuidanceConfig, StructureVideoEntry
+from .contracts import (
+    TaskDispatchContext,
+    OrchestratorDetails,
+    validate_orchestrator_details,
+)
 
 __all__ = [
     'ParamGroup',
@@ -27,4 +32,6 @@ __all__ = [
     'PhaseConfig',
     'TaskConfig',
     'StructureGuidanceConfig', 'StructureVideoEntry',
+    'TaskDispatchContext', 'OrchestratorDetails',
+    'validate_orchestrator_details',
 ]

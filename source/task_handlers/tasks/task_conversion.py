@@ -1,11 +1,5 @@
-import json
-from pathlib import Path
-import numpy as np
-
 from source.core.log import headless_logger
 
-# Diffusion timestep scaling constant: maps normalized [0,1] sigmas to diffusion timestep range
-DIFFUSION_TIMESTEP_SCALE = 1000
 
 # Target megapixel count for auto-scaling img2img input images
 IMG2IMG_TARGET_MEGAPIXELS = 1024 * 1024
@@ -15,222 +9,6 @@ DEFAULT_IMAGE_RESOLUTION = "1024x1024"
 from source.models.model_handlers.qwen_handler import QwenHandler
 from source.utils import extract_orchestrator_parameters
 from headless_model_management import GenerationTask
-from source.task_handlers.worker.worker_utils import dprint
-
-def parse_phase_config(phase_config: dict, num_inference_steps: int, task_id: str = "unknown", model_name: str = None, debug_mode: bool = False) -> dict:
-    """
-    Parse phase_config override block and return computed parameters.
-    """
-    # Import the timestep_transform function from phase_distribution_simulator
-    # ... (Logic from original parse_phase_config) ...
-    # Since we are moving this, we need to be careful about imports.
-    # We can duplicate the inline fallback for timestep_transform.
-    
-    def timestep_transform(t: float, shift: float = 5.0, num_timesteps: int = DIFFUSION_TIMESTEP_SCALE) -> float:
-        t = t / num_timesteps
-        new_t = shift * t / (1 + (shift - 1) * t)
-        new_t = new_t * num_timesteps
-        return new_t
-
-    # Validation with auto-correction
-    num_phases = phase_config.get("num_phases", 3)
-    steps_per_phase = phase_config.get("steps_per_phase", [2, 2, 2])
-    flow_shift = phase_config.get("flow_shift", 5.0)
-    phases_config = phase_config.get("phases", [])
-
-    # Auto-correct num_phases
-    if len(steps_per_phase) != num_phases or len(phases_config) != num_phases:
-        inferred_phases = len(steps_per_phase)
-        if len(phases_config) != inferred_phases:
-            inferred_phases = len(phases_config)
-            headless_logger.warning(
-                f"phase_config mismatch: num_phases={num_phases}, steps_per_phase has {len(steps_per_phase)} values, "
-                f"phases array has {len(phases_config)} entries. Using phases array length: {inferred_phases}",
-                task_id=task_id
-            )
-        else:
-            headless_logger.warning(
-                f"phase_config mismatch: num_phases={num_phases} but steps_per_phase has {len(steps_per_phase)} values. "
-                f"Auto-correcting num_phases to {inferred_phases}",
-                task_id=task_id
-            )
-        num_phases = inferred_phases
-
-    if num_phases not in [2, 3]:
-        raise ValueError(f"Task {task_id}: num_phases must be 2 or 3, got {num_phases}")
-
-    total_steps = sum(steps_per_phase)
-    if total_steps != num_inference_steps:
-        raise ValueError(f"Task {task_id}: steps_per_phase {steps_per_phase} sum to {total_steps}, but num_inference_steps is {num_inference_steps}")
-
-    phases_config = phase_config.get("phases", [])
-    if len(phases_config) != num_phases:
-        raise ValueError(f"Task {task_id}: Expected {num_phases} phase configs, got {len(phases_config)}")
-
-    # Generate timesteps
-    sample_solver = phase_config.get("sample_solver", "euler")
-
-    if sample_solver == "causvid":
-        headless_logger.warning(f"phase_config with causvid solver is not recommended - causvid uses hardcoded timesteps", task_id=task_id)
-
-    if sample_solver == "unipc" or sample_solver == "":
-        sigma_max = 1.0
-        sigma_min = 0.001
-        sigmas = list(np.linspace(sigma_max, sigma_min, num_inference_steps + 1, dtype=np.float32))[:-1]
-        sigmas = [flow_shift * s / (1 + (flow_shift - 1) * s) for s in sigmas]
-        timesteps = [s * DIFFUSION_TIMESTEP_SCALE for s in sigmas]
-    elif sample_solver in ["dpm++", "dpm++_sde"]:
-        sigmas = list(np.linspace(1, 0, num_inference_steps + 1, dtype=np.float32))[:num_inference_steps]
-        sigmas = [flow_shift * s / (1 + (flow_shift - 1) * s) for s in sigmas]
-        timesteps = [s * DIFFUSION_TIMESTEP_SCALE for s in sigmas]
-    elif sample_solver == "euler":
-        timesteps = list(np.linspace(DIFFUSION_TIMESTEP_SCALE, 1, num_inference_steps, dtype=np.float32))
-        timesteps.append(0.)
-        timesteps = [timestep_transform(t, shift=flow_shift, num_timesteps=DIFFUSION_TIMESTEP_SCALE) for t in timesteps][:-1]
-    else:
-        timesteps = list(np.linspace(DIFFUSION_TIMESTEP_SCALE, 1, num_inference_steps, dtype=np.float32))
-
-    headless_logger.debug(f"Generated timesteps for phase_config: {[f'{t:.1f}' for t in timesteps]}", task_id=task_id)
-
-    # Calculate switch thresholds
-    switch_step_1 = steps_per_phase[0]
-    switch_threshold = None
-    switch_threshold2 = None
-
-    if switch_step_1 < num_inference_steps:
-        last_phase1_t = timesteps[switch_step_1 - 1]
-        first_phase2_t = timesteps[switch_step_1]
-        switch_threshold = float((last_phase1_t + first_phase2_t) / 2)
-
-    if num_phases >= 3:
-        switch_step_2 = steps_per_phase[0] + steps_per_phase[1]
-        if switch_step_2 < num_inference_steps:
-            last_phase2_t = timesteps[switch_step_2 - 1]
-            first_phase3_t = timesteps[switch_step_2]
-            switch_threshold2 = float((last_phase2_t + first_phase3_t) / 2)
-
-    result = {
-        "guidance_phases": num_phases,
-        "switch_threshold": switch_threshold,
-        "switch_threshold2": switch_threshold2,
-        "flow_shift": flow_shift,
-        "sample_solver": sample_solver,
-        "model_switch_phase": phase_config.get("model_switch_phase", 2),
-    }
-
-    if num_phases >= 1:
-        result["guidance_scale"] = phases_config[0].get("guidance_scale", 3.0)
-    if num_phases >= 2:
-        result["guidance2_scale"] = phases_config[1].get("guidance_scale", 1.0)
-    if num_phases >= 3:
-        result["guidance3_scale"] = phases_config[2].get("guidance_scale", 1.0)
-
-    # Process LoRAs
-    all_lora_urls = []
-    seen_urls = set()
-    for phase_cfg in phases_config:
-        for lora in phase_cfg.get("loras", []):
-            url = lora["url"]
-            if not url or not url.strip():
-                continue
-            if url not in seen_urls:
-                all_lora_urls.append(url)
-                seen_urls.add(url)
-
-    lora_multipliers = []
-    additional_loras = {}
-
-    for lora_url in all_lora_urls:
-        phase_mults = []
-        for phase_idx, phase_cfg in enumerate(phases_config):
-            lora_in_phase = None
-            for lora in phase_cfg.get("loras", []):
-                if lora["url"] == lora_url:
-                    lora_in_phase = lora
-                    break
-            
-            if lora_in_phase:
-                multiplier_str = str(lora_in_phase["multiplier"])
-                if "," in multiplier_str:
-                    values = multiplier_str.split(",")
-                    expected_count = steps_per_phase[phase_idx]
-                    if len(values) != expected_count:
-                        raise ValueError(f"Task {task_id}: Phase {phase_idx+1} LoRA multiplier has {len(values)} values, but phase has {expected_count} steps")
-                    phase_mults.append(multiplier_str)
-                else:
-                    phase_mults.append(multiplier_str)
-            else:
-                phase_mults.append("0")
-
-        if num_phases == 2:
-            multiplier_string = f"{phase_mults[0]};{phase_mults[1]}"
-        else:
-            multiplier_string = f"{phase_mults[0]};{phase_mults[1]};{phase_mults[2]}"
-        
-        lora_multipliers.append(multiplier_string)
-
-        try:
-            first_val = float(phase_mults[0].split(",")[0])
-            additional_loras[lora_url] = first_val
-        except (ValueError, IndexError):
-            additional_loras[lora_url] = 1.0
-
-    # Prepare patch config (simplified for extracted module)
-    if model_name:
-        # Note: We need to locate the Wan2GP defaults directory.
-        # Assuming this is running from source/task_conversion.py, we need to go up one level to find Wan2GP
-        # But Wan2GP is usually at root level or alongside worker.py.
-        # Let's assume standard structure relative to this file.
-        # This file is in source/task_handlers/tasks/, so 4 levels up to project root.
-        wan_dir = Path(__file__).parent.parent.parent.parent / "Wan2GP"
-        defaults_dir = wan_dir / "defaults"
-        
-        original_config_path = defaults_dir / f"{model_name}.json"
-        if original_config_path.exists():
-            try:
-                with open(original_config_path, 'r') as f:
-                    original_config = json.load(f)
-                
-                import copy
-                temp_config = copy.deepcopy(original_config)
-                temp_config["guidance_phases"] = num_phases
-                
-                guidance_scales = [p.get("guidance_scale", 1.0) for p in phases_config]
-                if len(guidance_scales) >= 1: temp_config["guidance_scale"] = guidance_scales[0]
-                if len(guidance_scales) >= 2: temp_config["guidance2_scale"] = guidance_scales[1]
-                if len(guidance_scales) >= 3: temp_config["guidance3_scale"] = guidance_scales[2]
-
-                temp_config["flow_shift"] = phase_config.get("flow_shift", temp_config.get("flow_shift", 5.0))
-                temp_config["sample_solver"] = phase_config.get("sample_solver", temp_config.get("sample_solver", "euler"))
-
-                if "model" in temp_config:
-                    temp_config["model"]["loras"] = []
-                    temp_config["model"]["loras_multipliers"] = []
-                    # Enable SVI mode if phase_config has SVI LoRAs or svi2pro flag
-                    svi_loras_present = any(
-                        "SVI" in lora_url or "svi" in lora_url.lower() 
-                        for lora_url in all_lora_urls
-                    )
-                    if svi_loras_present or phase_config.get("svi2pro", False):
-                        temp_config["model"]["svi2pro"] = True
-                        headless_logger.debug(f"[PATCH_CONFIG] Added svi2pro=True to model definition (SVI LoRAs detected)", task_id=task_id)
-
-                result["_patch_config"] = temp_config
-                result["_patch_model_name"] = model_name
-            except (OSError, ValueError, KeyError) as e:
-                headless_logger.warning(f"Could not prepare phase_config patch: {e}", task_id=task_id)
-
-    # CRITICAL: lora_names must contain the URLs so LoRAConfig can:
-    # 1. Detect URLs and mark them as PENDING for download
-    # 2. Associate each URL with its corresponding phase-format multiplier
-    # 3. Download via _download_lora_from_url() in the queue
-    # Without this, activated_loras ends up empty and the multipliers aren't associated
-    result["lora_names"] = all_lora_urls
-    result["lora_multipliers"] = lora_multipliers
-    result["additional_loras"] = additional_loras
-
-    return result
-
 
 def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: str, wan2gp_path: str, debug_mode: bool = False) -> GenerationTask:
     """
@@ -316,12 +94,7 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
         )
     
     # Extract orchestrator parameters
-    # We use a lambda for dprint to match signature expected by extract_orchestrator_parameters if needed,
-    # or just pass the function from worker_utils
-    def dprint_wrapper(msg):
-        dprint(msg, task_id=task_id, debug_mode=debug_mode)
-
-    extracted_params = extract_orchestrator_parameters(db_task_params, task_id, dprint_wrapper)
+    extracted_params = extract_orchestrator_parameters(db_task_params, task_id)
 
     if "phase_config" in extracted_params:
         db_task_params["phase_config"] = extracted_params["phase_config"]
@@ -339,9 +112,7 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
     # Qwen Task Handlers
     qwen_handler = QwenHandler(
         wan_root=wan2gp_path,
-        task_id=task_id,
-        dprint_func=dprint_wrapper
-    )
+        task_id=task_id)
 
     if task_type == "qwen_image_edit":
         qwen_handler.handle_qwen_image_edit(db_task_params, generation_params)
@@ -449,7 +220,7 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
                     os.unlink(local_image_path)
                 except OSError as e_cleanup:
                     headless_logger.debug(f"Failed to clean up temp image file after download error: {e_cleanup}", task_id=task_id)
-            raise ValueError(f"Task {task_id}: Failed to download image for img2img: {e}")
+            raise ValueError(f"Task {task_id}: Failed to download image for img2img: {e}") from e
 
         # CRITICAL: Pass local file path (not URL) to WGP
         generation_params["image_start"] = local_image_path
@@ -517,7 +288,7 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
             # Note: LoRA URL resolution is handled centrally in HeadlessTaskQueue._convert_to_wgp_task()
             # URLs in activated_loras are detected by LoRAConfig.from_params() and downloaded there
         except (ValueError, KeyError, TypeError) as e:
-            raise ValueError(f"Task {task_id}: Invalid phase_config: {e}")
+            raise ValueError(f"Task {task_id}: Invalid phase_config: {e}") from e
 
     priority = db_task_params.get("priority", 0)
     if task_type.endswith("_orchestrator"):
@@ -532,5 +303,4 @@ def db_task_to_generation_task(db_task_params: dict, task_id: str, task_type: st
     )
     
     return generation_task
-
 

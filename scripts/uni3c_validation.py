@@ -58,7 +58,7 @@ def extract_frames_from_video(
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
-            capture_output=True, text=True, check=True
+            capture_output=True, text=True, check=True, timeout=300
         )
         duration = float(result.stdout.strip())
     except (subprocess.SubprocessError, OSError, ValueError) as e:
@@ -81,7 +81,7 @@ def extract_frames_from_video(
             subprocess.run(
                 ["ffmpeg", "-y", "-ss", str(ts), "-i", str(video_path),
                  "-vframes", "1", "-q:v", "2", str(frame_path)],
-                capture_output=True, check=True
+                capture_output=True, check=True, timeout=300
             )
             if frame_path.exists():
                 frame_paths.append(str(frame_path))
@@ -303,7 +303,7 @@ Answer format:
 - Guide Motion: [description]
 - Baseline Motion: [description]  
 - Uni3C Motion: [description]
-- VERDICT: [YES/NO/INCONCLUSIVE] - Uni3C {"matches" if yes else "does not match"} guide better than baseline
+- VERDICT: [YES/NO/INCONCLUSIVE] - Uni3C [matches/does not match] guide better than baseline
 - Confidence: [HIGH/MEDIUM/LOW]
 - Reasoning: [1-2 sentences explaining your verdict]
 

@@ -28,7 +28,7 @@ from datetime import datetime
 # Add project to Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from source.task_handlers.join.generation import _handle_join_clips_task
+from source.task_handlers.join.generation import handle_join_clips_task
 
 
 def run_join_clips(
@@ -144,12 +144,11 @@ def run_join_clips(
         start_time = time.time()
 
         # Call join_clips handler directly
-        success, result = _handle_join_clips_task(
+        success, result = handle_join_clips_task(
             task_params_from_db=task_params,
             main_output_dir_base=output_dir.parent,
             task_id=task_id,
             task_queue=task_queue,
-            dprint=print
         )
 
         generation_time = time.time() - start_time

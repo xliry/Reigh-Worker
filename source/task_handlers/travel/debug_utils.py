@@ -21,7 +21,7 @@ except ImportError:
     _COLOR_MATCH_DEPS_AVAILABLE = False
 
 from ...utils import get_video_frame_count_and_fps
-from .svi_config import BYTES_PER_MB, MB_PER_GB, BYTES_PER_GB
+from source.core.constants import BYTES_PER_MB, MB_PER_GB, BYTES_PER_GB
 
 
 # Add debugging helper function

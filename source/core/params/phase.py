@@ -1,8 +1,9 @@
 """
 Phase configuration handling.
 
-IMPORTANT: This wraps the existing parse_phase_config() function rather than
-reimplementing its complex timestep/threshold calculation logic.
+Defines dataclasses for phase-based generation config (PhaseConfig) and a
+parser (from_params) that delegates to parse_phase_config() for the complex
+timestep/threshold calculation logic.
 """
 
 from dataclasses import dataclass, field
@@ -16,12 +17,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PhaseConfig(ParamGroup):
-    """
-    Phase-based generation configuration.
-    
-    Wraps the existing parse_phase_config() function to provide typed access
-    while preserving battle-tested calculation logic.
-    """
+    """Phase-based generation configuration with typed field access."""
     raw_config: Dict[str, Any] = field(default_factory=dict)
     parsed_output: Dict[str, Any] = field(default_factory=dict)
     
@@ -36,11 +32,7 @@ class PhaseConfig(ParamGroup):
     
     @classmethod
     def from_params(cls, params: Dict[str, Any], **context) -> 'PhaseConfig':
-        """
-        Parse phase config using the existing parse_phase_config() function.
-        
-        This wraps rather than reimplements the existing logic.
-        """
+        """Parse phase config by delegating to parse_phase_config()."""
         phase_config = params.get('phase_config')
         if not phase_config:
             return cls()
@@ -54,9 +46,8 @@ class PhaseConfig(ParamGroup):
         total_steps = sum(steps_per_phase)
         
         try:
-            # Import and call existing parse_phase_config
-            from source.task_handlers.tasks.task_conversion import parse_phase_config
-            
+            from source.core.params.phase_config_parser import parse_phase_config
+
             parsed = parse_phase_config(
                 phase_config=phase_config,
                 num_inference_steps=total_steps,
