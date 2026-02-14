@@ -12,13 +12,6 @@ from .autoencoder_kl import AutoencoderKL
 from .pipeline_z_image import ZImagePipeline
 from .z_image_transformer2d import ZImageTransformer2DModel
 
-# Add project root to path for hires utils
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from source.media.video.hires_utils import HiresFixHelper
-
 
 logger = logging.get_logger(__name__)
 

@@ -8,14 +8,6 @@ import torch, json, os, sys
 import math
 from pathlib import Path
 
-# Add project root to path for imports
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from source.core.params.phase_multiplier_utils import get_phase_loras
-from source.media.video.hires_utils import HiresFixHelper
-
 from diffusers.image_processor import VaeImageProcessor
 from .transformer_qwenimage import QwenImageTransformer2DModel
 
